@@ -1,0 +1,26 @@
+version: "3"
+
+services:
+  cm7yxjp7k004ms6ado162pav9-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - PORT=8001
+      - HOST=0.0.0.0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    expose:
+      - "8001"
+    labels:
+      - traefik.enable=true
+      - "traefik.http.routers.cm7yxjp7k004ms6ado162pav9-app.rule=Host(`${DOMAIN:-38-55-129-183.nip.io}`)"
+      - traefik.http.routers.cm7yxjp7k004ms6ado162pav9-app.entrypoints=web
+      - traefik.http.services.cm7yxjp7k004ms6ado162pav9-app.loadbalancer.server.port=8001
+    networks:
+      - coolify
+    restart: unless-stopped
+
+networks:
+  coolify:
+    external: true
