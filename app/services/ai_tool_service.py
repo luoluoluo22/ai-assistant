@@ -4,7 +4,7 @@ import json
 import logging
 import aiohttp
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, AsyncGenerator
 from ..tools.manager import ToolManager
 from ..core.config import settings
 
@@ -18,69 +18,202 @@ class AIToolService:
         """Initialize the service."""
         self.tool_manager = ToolManager()
         logger.info("AI tool service initialized")
+        logger.info("当前使用的模型配置: %s", settings.DEFAULT_MODEL)
+        logger.info("当前使用的API URL: %s", settings.OPENAI_BASE_URL)
     
-    async def generate_text(
+    async def chat_completion(
         self,
-        system_prompt: str,
-        user_prompt: str,
+        prompt: str,
+        system_prompt: str = None,
         model: str = settings.DEFAULT_MODEL,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         top_p: float = 0.95,
         frequency_penalty: float = 0.0,
-        presence_penalty: float = 0.0,
-        timeout: int = 30  # 添加超时参数，默认 30 秒
+        presence_penalty: float = 0.0
     ) -> str:
-        """Generate text using AI model."""
+        """发送聊天补全请求。
+        
+        Args:
+            prompt: 提示词
+            system_prompt: 系统提示词
+            model: 使用的模型
+            temperature: 采样温度
+            max_tokens: 最大生成token数
+            top_p: 核采样阈值
+            frequency_penalty: 频率惩罚
+            presence_penalty: 存在惩罚
+            
+        Returns:
+            模型的响应文本
+        """
+        logger.info("发送请求到大模型服务")
+        logger.info("请求参数: model=%s, temperature=%.2f, max_tokens=%s", 
+                   model, temperature, max_tokens)
+        
+        # 打印系统提示词和用户提示词
+        if system_prompt:
+            logger.info("系统提示词:\n%s", system_prompt)
+        logger.info("用户提示词:\n%s", prompt)
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
         try:
-            logger.info("发送请求到大模型服务")
-            logger.info(f"请求参数: model={model}, temperature={temperature:.2f}, max_tokens={max_tokens}")
-            
-            headers = {
-                "Authorization": f"Bearer {settings.LLM_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
             async with aiohttp.ClientSession() as session:
+                # 保持模型名称的原始大小写
+                model_name = model.strip()
+                
+                request_data = {
+                    "model": model_name,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "top_p": top_p,
+                    "frequency_penalty": frequency_penalty,
+                    "presence_penalty": presence_penalty,
+                    "stream": False
+                }
+                
+                logger.debug("发送请求数据:\n%s", json.dumps(request_data, ensure_ascii=False, indent=2))
+                
                 async with session.post(
-                    settings.LLM_API_URL,
-                    headers=headers,  # 添加认证头
-                    json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                        "top_p": top_p,
-                        "frequency_penalty": frequency_penalty,
-                        "presence_penalty": presence_penalty
+                    settings.OPENAI_BASE_URL + "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
                     },
-                    timeout=aiohttp.ClientTimeout(total=timeout)  # 设置超时
+                    json=request_data
                 ) as response:
                     response_text = await response.text()
                     
                     if response.status != 200:
-                        logger.error(f"AI 服务返回错误: {response.status} - {response_text}")
-                        return f"AI 服务返回错误: {response.status} - {response_text}"
+                        logger.error("API请求失败: %s\n响应内容: %s", response.status, response_text)
+                        return f"API请求失败: {response.status}"
                     
                     try:
-                        response_data = json.loads(response_text)
-                        # OpenRouter API 返回格式处理
-                        if "choices" in response_data:
-                            return response_data["choices"][0]["message"]["content"]
-                        return response_data.get("response", "")
-                    except json.JSONDecodeError:
-                        logger.error(f"解析 AI 服务响应失败: {response_text}")
-                        return "解析 AI 服务响应失败"
+                        data = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        logger.error("解析响应JSON失败: %s\n响应内容: %s", str(e), response_text)
+                        return f"解析响应失败: {str(e)}"
+                    
+                    logger.debug("API原始响应: %s", json.dumps(data, ensure_ascii=False, indent=2))
+                    
+                    if not data.get("choices"):
+                        error_msg = f"API响应中没有choices字段: {json.dumps(data, ensure_ascii=False)}"
+                        logger.error(error_msg)
+                        return error_msg
+                    
+                    content = data["choices"][0]["message"]["content"]
+                    if not content.strip():
+                        logger.warning("API返回了空响应")
+                        return "API返回了空响应"
                         
-        except asyncio.TimeoutError:
-            logger.error("AI 服务请求超时")
-            return "AI 服务请求超时，请重试"
+                    logger.info("模型响应内容:\n%s", content)
+                    return content
+                    
+        except aiohttp.ClientError as e:
+            error_msg = f"网络请求失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return error_msg
         except Exception as e:
-            logger.error(f"生成文本失败: {str(e)}", exc_info=True)
-            return f"生成文本失败: {str(e)}"
+            error_msg = f"请求失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return error_msg
+            
+    async def stream_chat_completion(
+        self,
+        prompt: str,
+        model: str = settings.DEFAULT_MODEL,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        top_p: float = 0.95,
+        frequency_penalty: float = 0.0,
+        presence_penalty: float = 0.0
+    ) -> AsyncGenerator[str, None]:
+        """流式发送聊天补全请求。
+        
+        Args:
+            prompt: 提示词
+            model: 使用的模型
+            temperature: 采样温度
+            max_tokens: 最大生成token数
+            top_p: 核采样阈值
+            frequency_penalty: 频率惩罚
+            presence_penalty: 存在惩罚
+            
+        Yields:
+            模型响应的数据块
+        """
+        logger.info("发送流式请求到大模型服务")
+        logger.info("请求参数: model=%s, temperature=%.2f, max_tokens=%s", 
+                   model, temperature, max_tokens)
+        logger.info("提示词内容:\n%s", prompt)
+        
+        messages = [{"role": "user", "content": prompt}]
+        full_response = ""
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 保持模型名称的原始大小写
+                model_name = model.strip()
+                
+                async with session.post(
+                    settings.OPENAI_BASE_URL + "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": model_name,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "top_p": top_p,
+                        "frequency_penalty": frequency_penalty,
+                        "presence_penalty": presence_penalty,
+                        "stream": True
+                    }
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error("流式API请求失败: %s, 错误: %s", response.status, error_text)
+                        yield ""
+                        return
+                        
+                    async for line in response.content:
+                        if line:
+                            try:
+                                line = line.decode('utf-8').strip()
+                                if line.startswith('data: '):
+                                    line = line[6:]  # 移除 "data: " 前缀
+                                if line == '[DONE]':
+                                    continue
+                                    
+                                data = json.loads(line)
+                                if not data.get("choices"):
+                                    continue
+                                    
+                                delta = data["choices"][0].get("delta", {})
+                                if "content" in delta:
+                                    content = delta["content"]
+                                    full_response += content
+                                    yield content
+                                    
+                            except json.JSONDecodeError:
+                                logger.warning("无法解析响应行: %s", line)
+                                continue
+                            except Exception as e:
+                                logger.error("处理响应行时出错: %s", str(e), exc_info=True)
+                                continue
+                                
+        except Exception as e:
+            logger.error("流式请求失败: %s", str(e), exc_info=True)
+            yield ""
+            
+        logger.info("流式响应完整内容:\n%s", full_response)
     
     def get_tools_description(self) -> str:
         """Get formatted description of available tools.

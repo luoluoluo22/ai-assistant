@@ -137,7 +137,8 @@ class MiCloudTool(BaseTool):
         action = kwargs.get("action")
         try:
             if action == "list_sms":
-                return await self.list_sms(kwargs.get("limit", 20))
+                result = await self.list_sms(kwargs.get("limit", 20))
+                return result
             elif action == "list_calls":
                 return await self.list_calls(kwargs.get("limit", 20))
             elif action == "search_sms":
@@ -152,10 +153,7 @@ class MiCloudTool(BaseTool):
                 raise ValueError(f"未知的操作: {action}")
         except Exception as e:
             logger.error(f"执行操作失败: {str(e)}")
-            return {
-                "status": "error",
-                "message": f"执行操作失败: {str(e)}"
-            }
+            return f"### 执行失败\n\n执行操作失败: {str(e)}"
     
     def _run(self, *args: Any, **kwargs: Any) -> Any:
         """运行工具的方法（必需）"""
@@ -184,20 +182,21 @@ class MiCloudTool(BaseTool):
             
             if data.get("result") == "ok":
                 formatted_text = await self._format_sms_data(data)
-                return {
-                    "status": "success",
-                    "text": formatted_text,
-                    "data": data
-                }
+                if formatted_text.get("status") == "success":
+                    return {
+                        "success": True,
+                        "result": formatted_text["text"]
+                    }
+                else:
+                    raise Exception(formatted_text.get("message", "格式化数据失败"))
             else:
                 raise Exception(f"获取短信列表失败: {data}")
                 
         except Exception as e:
             self.logger.error(f"获取短信列表失败: {str(e)}")
             return {
-                "status": "error",
-                "text": "### 获取短信失败\n\n抱歉，获取短信列表时出现错误。请确保：\n1. 手机已开启短信同步功能\n2. 网络连接正常\n3. 账号登录状态有效",
-                "message": str(e)
+                "success": False,
+                "result": "### 获取短信失败\n\n抱歉，获取短信列表时出现错误。请确保：\n1. 手机已开启短信同步功能\n2. 网络连接正常\n3. 账号登录状态有效"
             }
     
     async def list_calls(self, limit: int = 20) -> Dict[str, Any]:
@@ -205,17 +204,19 @@ class MiCloudTool(BaseTool):
         try:
             # 从短信接口获取数据
             result = await self.list_sms(limit)
-            if result["status"] != "success":
+            if not result.get("success"):
                 return result
             
             return {
-                "status": "success",
-                "data": result["data"]["calls"]
+                "success": True,
+                "result": {
+                    "data": result["data"]["calls"]
+                }
             }
         except Exception as e:
             return {
-                "status": "error",
-                "message": f"获取通话记录失败: {str(e)}"
+                "success": False,
+                "result": f"获取通话记录失败: {str(e)}"
             }
     
     async def search_sms(self, keyword: str, start_time: str = None, end_time: str = None) -> Dict[str, Any]:
@@ -234,7 +235,7 @@ class MiCloudTool(BaseTool):
             
             # 获取所有短信
             result = await self.list_sms(1000)
-            if result["status"] != "success":
+            if not result.get("success"):
                 return result
             
             # 在本地进行搜索过滤
@@ -251,13 +252,15 @@ class MiCloudTool(BaseTool):
                 messages.append(msg)
             
             return {
-                "status": "success",
-                "data": messages
+                "success": True,
+                "result": {
+                    "data": messages
+                }
             }
         except Exception as e:
             return {
-                "status": "error",
-                "message": f"搜索短信失败: {str(e)}"
+                "success": False,
+                "result": f"搜索短信失败: {str(e)}"
             }
     
     async def export_data(self, export_type: str = "sms") -> Dict[str, Any]:
@@ -265,7 +268,7 @@ class MiCloudTool(BaseTool):
         try:
             # 获取数据
             result = await self.list_sms(limit=1000)  # 获取更多记录
-            if result["status"] != "success":
+            if not result.get("success"):
                 return result
             
             # 准备导出文件
@@ -303,14 +306,13 @@ class MiCloudTool(BaseTool):
                         ])
             
             return {
-                "status": "success",
-                "message": f"数据已导出到文件: {filepath}",
-                "file": str(filepath)
+                "success": True,
+                "result": f"数据已导出到文件: {filepath}"
             }
         except Exception as e:
             return {
-                "status": "error",
-                "message": f"导出数据失败: {str(e)}"
+                "success": False,
+                "result": f"导出数据失败: {str(e)}"
             }
     
     async def _format_sms_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -365,31 +367,43 @@ class MiCloudTool(BaseTool):
                 "其他": []
             }
             
+            # 分类规则
+            verification_keywords = ["验证码", "校验码", "code", "Code"]
+            notification_keywords = ["通知", "提醒", "成功", "【订单", "【快递", "【支付"]
+            
             for msg in messages:
                 content = msg["content"]
-                if "验证码" in content or "code" in content.lower():
+                if any(keyword in content for keyword in verification_keywords):
                     categorized_messages["验证码"].append(msg)
-                elif any(keyword in content for keyword in ["通知", "提醒", "到期", "过期", "账号", "安全"]):
+                elif any(keyword in content for keyword in notification_keywords):
                     categorized_messages["通知提醒"].append(msg)
                 else:
                     categorized_messages["其他"].append(msg)
-                
+            
+            # 生成统计信息
+            total_messages = len(messages)
+
+            # 生成markdown格式的文本
+            md_text = f"\n### 短信列表 (共 {total_messages} 条，未读 {unread_count} 条)\n\n"
+            
+            for category, msgs in categorized_messages.items():
+                if msgs:  # 只显示有消息的分类
+                    md_text += f"#### {category} ({len(msgs)} 条)\n\n"
+                    for msg in msgs:
+                        phone = msg["phone"]
+                        time = msg["time"]
+                        content = msg["content"]
+                        unread = "**[未读]** " if msg["unread"] else ""
+                        
+                        md_text += f"- {unread}`{phone}` *{time}*\n\n  {content}\n\n"
+
             return {
                 "status": "success",
-                "summary": {
-                    "total_messages": len(messages),
-                    "unread_count": unread_count,
-                    "categories": {
-                        "验证码": len(categorized_messages["验证码"]),
-                        "通知提醒": len(categorized_messages["通知提醒"]),
-                        "其他": len(categorized_messages["其他"])
-                    }
-                },
-                "messages": categorized_messages
+                "text": md_text
             }
+                
         except Exception as e:
-            logger.error(f"格式化短信数据失败: {str(e)}")
-            logger.error(f"错误详情: {type(e).__name__}: {str(e)}")
+            self.logger.error(f"格式化短信数据失败: {str(e)}")
             return {
                 "status": "error",
                 "message": f"格式化短信数据失败: {str(e)}"

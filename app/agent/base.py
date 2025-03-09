@@ -8,78 +8,11 @@ import time
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from ..services.ai_tool_service import AIToolService
 from ..core.config import settings
-from ..core.prompts import generate_system_prompt
+from ..core.prompts import generate_system_prompt, generate_base_system_prompt, generate_result_summary_prompt
 from ..tools.manager import ToolManager
 
 # 配置日志
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """你是一个强大的 AI 助手,可以帮助用户完成各种任务。你可以使用以下工具:
-
-1. system_command - 执行系统命令
-   - 参数: command (字符串类型,要执行的命令)
-   - 示例: [{"tool_name": "system_command", "parameters": {"command": "ls"}}]
-
-2. knowledge_base - 知识库工具，支持增删改查操作
-   - 参数: 
-     - operation: 操作类型，必须是以下之一：
-       * "search": 搜索文档
-       * "get": 获取单个文档
-       * "create": 创建新文档
-       * "update": 更新文档
-       * "delete": 删除文档
-     - query: 搜索关键词（search操作必需）
-     - doc_id: 文档ID（get/update/delete操作必需）
-     - title: 文档标题（create必需，update可选）
-     - content: 文档内容（create必需，update可选）
-     - limit: 搜索结果数量限制（search操作可选，默认5）
-   - 示例:
-     * 搜索: [{"tool_name": "knowledge_base", "parameters": {"operation": "search", "query": "API密钥", "limit": 5}}]
-     * 创建: [{"tool_name": "knowledge_base", "parameters": {"operation": "create", "title": "测试文档", "content": "这是测试内容"}}]
-     * 更新: [{"tool_name": "knowledge_base", "parameters": {"operation": "update", "doc_id": "123", "title": "新标题", "content": "新内容"}}]
-     * 删除: [{"tool_name": "knowledge_base", "parameters": {"operation": "delete", "doc_id": "123"}}]
-
-知识库网页访问：
-知识库有一个网页版界面，地址是：https://luobiji.netlify.app/Cursor
-在以下情况下，你应该向用户提供这个链接：
-1. 用户明确要求查看知识库网页
-2. 用户需要浏览所有文档
-3. 搜索结果较多，建议用户在网页上查看完整内容时
-4. 用户想要更直观地管理知识库内容时
-
-工具使用原则：
-1. 只在必要时才使用工具。对于简单的问候、闲聊或不需要查询/操作的问题，直接回答即可。
-2. 使用 knowledge_base 工具的情况：
-   - 用户明确要求搜索、创建、更新或删除文档时
-   - 用户询问特定知识或文档内容时
-   - 用户需要管理知识库中的文档时
-3. 使用 system_command 工具的情况：
-   - 用户明确要求执行系统命令时
-   - 需要获取系统信息或执行系统操作时
-
-你的任务是:
-1. 理解用户的需求
-2. 判断是否需要使用工具
-3. 如果需要使用工具，生成执行计划（必须是一个 JSON 数组，包含工具调用步骤）
-4. 如果不需要使用工具，返回空数组 []
-
-注意：
-1. knowledge_base 工具必须指定 operation 参数
-2. 根据 operation 类型提供相应的必需参数
-3. 参数名称必须完全匹配，不能使用其他名称
-4. 不要滥用工具，只在真正需要时才使用
-
-示例响应格式:
-[
-  {
-    "tool_name": "knowledge_base",
-    "parameters": {
-      "operation": "create",
-      "title": "测试文档",
-      "content": "这是一个测试文档的内容"
-    }
-  }
-]"""
 
 class Agent:
     """Base agent class for handling user requests."""
@@ -95,7 +28,7 @@ class Agent:
             "os": sys.platform
         }
         self.system_prompt = generate_system_prompt()
-        # logger.info("Agent initialized with system prompt:\n%s", self.system_prompt)
+        logger.info("Agent initialized with system prompt:\n%s", self.system_prompt)
     
     async def process_message(
         self,
@@ -273,50 +206,43 @@ class Agent:
             user_prompt = "当前对话历史：\n" + "\n".join(history) + "\n\n"
             user_prompt += """请仔细分析用户的最新消息并生成下一步的执行计划。
 
-重要规则（必须严格遵守）：
-1. 每次只能返回一个工具调用
-2. 如果任务已完成，返回空数组 []
-3. 如果需要使用前一步骤的结果，应该在提示词中说明，由系统重新规划
+你必须以 JSON 数组格式返回执行计划，格式如下：
+[
+  {
+    "tool_name": "工具名称",
+    "parameters": {
+      "参数名": "参数值"
+    }
+  }
+]
 
-工具选择规则：
-1. 对于邮件操作：
-   - 查看邮件使用 list_emails 操作
-   - 删除邮件使用 delete_email 操作，需要提供 message_id
-   - 发送邮件使用 send_email 操作
+例如，如果用户要查看邮件，你应该返回：
+[
+  {
+    "tool_name": "email",
+    "parameters": {
+      "action": "list_emails"
+    }
+  }
+]
 
-2. 对于搜索类请求，优先使用网页搜索：
-   - 当用户消息中包含"网页搜索"、"web搜索"、"在网上搜索"时
-   - 当用户询问新闻、最新动态、实时信息时
-   必须返回：
-   [
-     {
-       "tool_name": "web_browser",
-       "parameters": {
-         "operation": "search_and_extract",
-         "query": "<用户的搜索关键词>",
-         "num_results": 3
-       }
-     }
-   ]
-
-请严格按照以上规则生成执行计划（仅返回 JSON 数组，不要添加任何其他文字）："""
+如果任务已完成或不需要使用工具，返回空数组 []。
+不要返回任何其他格式的内容，必须是合法的 JSON 数组。"""
             
             # 调用 AI 服务生成执行计划
-            response = await self.tool_service.generate_text(
-                system_prompt=self.system_prompt,
-                user_prompt=user_prompt,
+            response = await self.tool_service.chat_completion(
+                user_prompt,
+                system_prompt=self.system_prompt,  # 添加系统提示词
                 model=model,
-                temperature=0.2,  # 降低温度以获得更确定的响应
+                temperature=0.2,  # 使用较低的温度以获得更确定的执行计划
+                max_tokens=max_tokens,
                 top_p=top_p,
                 frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-                timeout=30  # 增加超时时间到 30 秒
+                presence_penalty=presence_penalty
             )
             
-            # 记录原始响应内容
             logger.info("AI 响应:\n%s", response)
             
-            # 尝试提取 JSON 部分
             try:
                 # 如果响应中包含其他文本，尝试提取 JSON 部分
                 if '```json' in response:
@@ -418,6 +344,21 @@ class Agent:
                 "tool_name": tool_name,
                 "parameters": parameters
             })
+            
+            # 对特定工具的结果进行处理
+            if tool_name == 'micloud':
+                try:
+                    if result.get("status") == "success" and isinstance(result.get("text"), dict):
+                        text_obj = result["text"]
+                        if isinstance(text_obj.get("text"), dict):
+                            text_data = text_obj["text"]
+                            if isinstance(text_data, dict) and "markdown" in text_data:
+                                return text_data["markdown"]
+                        elif isinstance(text_obj, dict) and "markdown" in text_obj:
+                            return text_obj["markdown"]
+                except Exception as e:
+                    logger.error(f"处理 micloud 结果失败: {str(e)}")
+            
             return result
         except Exception as e:
             logger.error(f"Tool execution failed: {str(e)}", exc_info=True)
@@ -441,32 +382,7 @@ class Agent:
         """Generate a natural language response."""
         try:
             # 构建系统提示词
-            system_prompt = """你是一个AI助手，现在需要根据用户的问题和工具执行结果生成一个总结性的回答。
-
-重要规则（必须严格遵守）：
-1. 只能使用工具实际返回的结果，绝对不能编造或臆测任何信息
-2. 如果工具执行失败，必须清晰地告知用户失败原因
-3. 如果需要更多信息，应该建议用户尝试其他操作
-
-具体要求：
-1. 仔细分析工具执行的结果
-2. 提取关键信息并进行总结
-3. 用清晰易懂的语言向用户解释发现了什么
-4. 如果是网页搜索结果：
-   - 重点总结每个网页的主要内容
-   - 保留每个来源的标题和URL
-   - 按重要性和相关性排序
-   - 使用markdown格式，让链接可点击
-5. 如果是知识库查询结果：
-   - 重点关注查询到的文档内容
-   - 如果结果较多或用户可能需要更全面的查看，提供知识库网页链接：https://luobiji.netlify.app/Cursor
-6. 如果是邮件操作结果：
-   - 清晰展示每封邮件的关键信息
-   - 如果操作失败，说明具体原因
-   - 提供下一步可能的操作建议
-
-请直接生成总结性回答，不要包含"正在分析"、"执行计划"等过程性描述。
-如果工具执行失败，直接说明失败原因，不要猜测或编造结果。"""
+            system_prompt = generate_result_summary_prompt()
 
             # 构建用户提示词
             user_prompt = f"用户问题：{message}\n\n"
@@ -494,17 +410,13 @@ class Agent:
             else:
                 user_prompt += "没有执行任何工具。\n"
             
-            user_prompt += "\n请生成一个总结性的回答，重点关注以下几点：\n"
-            user_prompt += "1. 如果是网页搜索结果，请保留原文链接\n"
-            user_prompt += "2. 按重要性组织内容，突出关键信息\n"
-            user_prompt += "3. 使用markdown格式让链接可点击\n"
-            
             # 调用 AI 服务生成回复
-            response = await self.tool_service.generate_text(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+            response = await self.tool_service.chat_completion(
+                user_prompt,
+                system_prompt=system_prompt,  # 添加系统提示词
                 model=model,
-                temperature=temperature,
+                temperature=0.2,  # 使用较低的温度以获得更确定的回答
+                max_tokens=max_tokens,
                 top_p=top_p,
                 frequency_penalty=frequency_penalty,
                 presence_penalty=presence_penalty
@@ -577,50 +489,64 @@ class Agent:
                 # 生成计划响应
                 plan_md = "使用工具：\n\n```json\n" + json.dumps(plan, ensure_ascii=False, indent=2) + "\n```\n"
                 yield {
-                    "type": "response",
+                    "type": "plan",
                     "content": plan_md
                 }
                 
                 # 3. 执行计划中的每个步骤
                 results = []
                 for step in plan:
+                    # 发送正在执行的步骤信息
+                    yield {
+                        "type": "step_start",
+                        "content": f"正在执行: {step['tool_name']}"
+                    }
+                    
                     # 异步执行步骤
                     result = await self._execute_step(step)
                     results.append(result)
                     
-                    # 生成步骤执行结果
-                    step_md = self._format_step_result(step, result)
-                    if step_md.strip():  # 只有当有内容时才显示
-                        yield {
-                            "type": "response",
-                            "content": step_md
-                        }
+                    # 处理工具执行结果
+                    if isinstance(result, dict):
+                        if result.get("success") is False:
+                            error_message = result.get("result", "未知错误")
+                            yield {
+                                "type": "error",
+                                "content": error_message
+                            }
+                            continue
+                        
+                        if "result" in result:
+                            yield {
+                                "type": "step_result",
+                                "content": result["result"]
+                            }
+                        else:
+                            step_md = self._format_step_result(step, result)
+                            if step_md.strip():
+                                yield {
+                                    "type": "step_result",
+                                    "content": step_md
+                                }
+                    elif isinstance(result, str):
+                        if result.strip():
+                            yield {
+                                "type": "step_result",
+                                "content": result
+                            }
                     
                     # 更新工具执行结果历史
                     self.context["tool_results"].append({
                         "step": step,
                         "result": result
                     })
-                    
-                    # 修改错误判断逻辑
-                    has_error = False
-                    if result.get("status") == "error":
-                        has_error = True
-                    elif result.get("return_code", 0) != 0:
-                        has_error = True
-                    elif step['tool_name'] == 'email' and result.get('success') is False:
-                        has_error = True
-                    
-                    if has_error:
-                        error_message = result.get("message") or result.get("error") or result.get("stderr", "未知错误")
-                        error_md = f"执行 `{step['tool_name']}` 时发生错误：\n```\n{error_message}\n```\n"
-                        yield {
-                            "type": "response",
-                            "content": error_md
-                        }
-                        break
                 
                 # 4. 生成最终响应
+                yield {
+                    "type": "thinking",
+                    "content": "##AI总结：\n"
+                }
+                
                 response = await self._generate_response(
                     message,
                     results,
@@ -646,6 +572,11 @@ class Agent:
                 }
             else:
                 # 如果没有执行计划，直接生成响应
+                yield {
+                    "type": "thinking",
+                    "content": "##AI总结：\n"
+                }
+                
                 response = await self._generate_response(
                     message,
                     [],
@@ -673,7 +604,7 @@ class Agent:
         except Exception as e:
             logger.error("Error in stream_message: %s", str(e), exc_info=True)
             yield {
-                "type": "response",
+                "type": "error",
                 "content": f"处理消息时发生错误: {str(e)}"
             }
             
@@ -691,6 +622,8 @@ class Agent:
             return self._format_knowledge_base_result(step, result)
         elif step['tool_name'] == 'email':
             return self._format_email_result(step, result)
+        elif isinstance(result, str):
+            return result
         else:
             return self._format_system_command_result(result)
     
@@ -848,10 +781,5 @@ class Agent:
         Returns:
             Formatted markdown string
         """
-        md = ""
-        if result.get("stdout"):
-            md += "**输出：**\n```\n" + result["stdout"] + "\n```\n"
-        if result.get("stderr"):
-            md += "**错误：**\n```\n" + result["stderr"] + "\n```\n"
-        md += f"**返回码：** `{result.get('return_code', -1)}`\n"
-        return md
+        # 直接返回原始结果的JSON字符串
+        return json.dumps(result, ensure_ascii=False, indent=2)

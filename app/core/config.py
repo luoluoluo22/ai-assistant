@@ -9,6 +9,15 @@ from pydantic import field_validator, Field
 class Settings(BaseSettings):
     """Application settings."""
     
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 添加调试日志
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Settings initialized with DEFAULT_MODEL: %s", self.DEFAULT_MODEL)
+        logger.info("Settings initialized with OPENAI_BASE_URL: %s", self.OPENAI_BASE_URL)
+        logger.info("Environment variables: %s", dict(os.environ))
+    
     # API配置
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AI Assistant API"
@@ -28,9 +37,9 @@ class Settings(BaseSettings):
     PORT: int = 8001
     
     # 安全配置
-    SECRET_KEY: str
+    SECRET_KEY: str = "your-secret-key"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-    API_KEY: str
+    API_KEY: str = "sk-test-123456"
     
     # 数据库配置
     MONGODB_URL: str = "mongodb://localhost:27017"
@@ -41,32 +50,28 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
     
     # AI模型配置
-    DEFAULT_MODEL: str = "qwen/qwq-32b:free"
-    OPENAI_API_KEY: str
+    DEFAULT_MODEL: str
+    OPENAI_API_KEY: str = "sk-or-v1-..."
     OPENAI_BASE_URL: str = "https://openrouter.ai/api/v1"
-    
-    # LLM服务配置
-    LLM_API_URL: str = "https://openrouter.ai/api/v1/chat/completions"
-    LLM_API_KEY: str
     
     # 其他API密钥
     ANTHROPIC_API_KEY: str = ""
     
     # GitHub配置
-    GITHUB_TOKEN: str
-    GITHUB_USERNAME: str
-    GITHUB_EMAIL: str
+    GITHUB_TOKEN: str = ""
+    GITHUB_USERNAME: str = "luoluoluo22"
+    GITHUB_EMAIL: str = "1137583371@qq.com"
     
     # Supabase 配置
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
     
     # 知识库配置
-    KNOWLEDGE_API_KEY: str
+    KNOWLEDGE_API_KEY: str = ""
     KNOWLEDGE_BASE_URL: str = "https://luobiji.netlify.app/Cursor"
     
     # SerpApi 配置
-    SERPAPI_KEY: str
+    SERPAPI_KEY: str = ""
     
     # 基本配置
     APP_NAME: str = "AI Assistant"
@@ -106,21 +111,21 @@ class Settings(BaseSettings):
     CURRENT_EMAIL_TYPE: str = "qq"
     
     # 小米云服务配置
-    MICLOUD_COOKIES: str = ""
+    MICLOUD_COOKIE: str = ""
 
     def get_micloud_cookies(self) -> Dict[str, str]:
         """获取解析后的小米云服务 cookies"""
-        if not self.MICLOUD_COOKIES:
+        if not self.MICLOUD_COOKIE:
             return {}
             
         try:
             # 尝试解析 JSON
-            if self.MICLOUD_COOKIES.startswith('{') and self.MICLOUD_COOKIES.endswith('}'):
-                return json.loads(self.MICLOUD_COOKIES)
+            if self.MICLOUD_COOKIE.startswith('{') and self.MICLOUD_COOKIE.endswith('}'):
+                return json.loads(self.MICLOUD_COOKIE)
                 
             # 尝试解析 cookie 字符串
             cookies = {}
-            for cookie in self.MICLOUD_COOKIES.split(';'):
+            for cookie in self.MICLOUD_COOKIE.split(';'):
                 cookie = cookie.strip()
                 if not cookie or '=' not in cookie:
                     continue
@@ -129,7 +134,7 @@ class Settings(BaseSettings):
             return cookies
         except Exception as e:
             import logging
-            logging.error(f"Failed to parse MICLOUD_COOKIES: {e}")
+            logging.error(f"Failed to parse MICLOUD_COOKIE: {e}")
             return {}
     
     class Config:

@@ -196,7 +196,8 @@ async def stream_response(
                         {
                             "index": 0,
                             "delta": {
-                                "content": chunk.get("content", "") if chunk.get("type") == "response" else ""
+                                "content": chunk.get("content", ""),
+                                "type": chunk.get("type", "response")  # 添加消息类型
                             },
                             "finish_reason": None
                         }
@@ -205,7 +206,7 @@ async def stream_response(
                 yield f"data: {json.dumps(response, ensure_ascii=False)}\n\n"
             else:
                 yield f"data: {chunk}\n\n"
-            await asyncio.sleep(0.1)  # 控制输出速率
+            await asyncio.sleep(0.05)  # 控制输出速率
         
         # 发送完成标记
         response = {
@@ -233,7 +234,6 @@ async def stream_response(
             }
         }
         yield f"data: {json.dumps(error_response, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
 
 @router.delete("/session/{session_id}")
 async def clear_session(
