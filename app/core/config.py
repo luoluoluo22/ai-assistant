@@ -2,9 +2,9 @@
 
 import os
 import json
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict, Any
 from pydantic_settings import BaseSettings
-from pydantic import field_validator
+from pydantic import field_validator, Field
 
 class Settings(BaseSettings):
     """Application settings."""
@@ -105,9 +105,39 @@ class Settings(BaseSettings):
     # 当前使用的邮箱类型
     CURRENT_EMAIL_TYPE: str = "qq"
     
+    # 小米云服务配置
+    MICLOUD_COOKIES: str = ""
+
+    def get_micloud_cookies(self) -> Dict[str, str]:
+        """获取解析后的小米云服务 cookies"""
+        if not self.MICLOUD_COOKIES:
+            return {}
+            
+        try:
+            # 尝试解析 JSON
+            if self.MICLOUD_COOKIES.startswith('{') and self.MICLOUD_COOKIES.endswith('}'):
+                return json.loads(self.MICLOUD_COOKIES)
+                
+            # 尝试解析 cookie 字符串
+            cookies = {}
+            for cookie in self.MICLOUD_COOKIES.split(';'):
+                cookie = cookie.strip()
+                if not cookie or '=' not in cookie:
+                    continue
+                name, value = cookie.split('=', 1)
+                cookies[name.strip()] = value.strip()
+            return cookies
+        except Exception as e:
+            import logging
+            logging.error(f"Failed to parse MICLOUD_COOKIES: {e}")
+            return {}
+    
     class Config:
         """Pydantic config."""
         case_sensitive = True
         env_file = ".env"
+        json_encoders = {
+            Dict[str, str]: lambda v: json.dumps(v)
+        }
 
 settings = Settings() 
