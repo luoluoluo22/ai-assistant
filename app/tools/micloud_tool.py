@@ -65,73 +65,75 @@ class MiCloudTool(BaseTool):
         }
     
     def __init__(self):
-        """初始化工具"""
+        """初始化小米云工具"""
         super().__init__()
         self.base_url = "https://i.mi.com"
+        self.export_dir = Path("./data/exports")
+        self.export_dir.mkdir(parents=True, exist_ok=True)
+        self.logger = logging.getLogger(__name__)
         
         # 创建数据目录
         self.data_dir = Path("./data")
-        self.export_dir = self.data_dir / "exports"
-        self.export_dir.mkdir(parents=True, exist_ok=True)
         
-    async def _make_request(self, endpoint: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def _make_request(self, url, params=None):
         """发送请求到小米云服务"""
-        url = f"{self.base_url}{endpoint}"
-        
-        # 添加时间戳参数
-        ts = int(datetime.now().timestamp() * 1000)
-        if params is None:
-            params = {}
-        params.update({
-            "ts": ts,
-            "_dc": ts
-        })
-        
-        # 获取当前有效的token
         try:
-            cookies = await get_token()
-        except ValueError as e:
-            logger.error(f"获取token失败: {str(e)}")
-            raise Exception("登录已过期，请确保token管理器正在运行")
-        
-        headers = {
-            "accept": "*/*",
-            "accept-encoding": "gzip, deflate, br",
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "referer": "https://i.mi.com/sms/h5",
-            "sec-ch-ua": '"Not(A:Brand";v="99", "Microsoft Edge";v="133", "Chromium";v="133"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-origin",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0",
-            "x-requested-with": "XMLHttpRequest",
-            "cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
-            "origin": "https://i.mi.com"
-        }
-        
-        try:
+            # 从文件加载token
+            token_file = Path("./data/micloud_token.json")
+            if not token_file.exists():
+                raise ValueError("Token文件不存在，请先运行test_request.py获取token")
+                
+            with open(token_file, 'r') as f:
+                token_data = json.load(f)
+                self.logger.info("从文件加载token成功")
+            
+            # 构建完整的cookies
+            cookies = {
+                "serviceToken": token_data["serviceToken"],
+                "userId": "627885182",
+                "i.mi.com_slh": "4B7bWQrk1AmtzPRtWza/ZWD3vuM=",
+                "Hm_lvt_c3e3e8b3ea48955284516b186acf0f4e": "1731677276",
+                "uLocale": "zh_CN",
+                "iplocale": "zh_CN",
+                "i.mi.com_isvalid_servicetoken": "true",
+                "i.mi.com_ph": "nWAmPwpg3taPGEwEXYYm5Q==",
+                "i.mi.com_istrudev": "true"
+            }
+            
+            headers = {
+                "accept": "*/*",
+                "accept-encoding": "gzip, deflate, br",
+                "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "referer": "https://i.mi.com/sms/h5",
+                "sec-ch-ua": '"Not(A:Brand";v="99", "Microsoft Edge";v="133", "Chromium";v="133"',
+                "sec-ch-ua-mobile": "?0", 
+                "sec-ch-ua-platform": '"Windows"',
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0",
+                "x-requested-with": "XMLHttpRequest",
+                "cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
+                "origin": "https://i.mi.com"
+            }
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, headers=headers) as response:
-                    if response.status != 200:
+                    self.logger.info(f"响应状态码: {response.status}")
+                    
+                    if response.status == 200:
+                        return await response.json()
+                    else:
                         text = await response.text()
-                        if "login" in text.lower():
-                            raise Exception("登录已过期，请确保token管理器正在运行")
+                        self.logger.error(f"请求失败: {text[:200]}")
                         raise Exception(f"请求失败: {text[:200]}")
-                    
-                    return await response.json()
-                    
+                        
         except Exception as e:
-            logger.error(f"请求失败: {str(e)}")
+            self.logger.error(f"请求失败: {str(e)}")
             raise
             
     async def execute(self, **kwargs: Any) -> Dict[str, Any]:
         """执行工具操作"""
-        # 检查token管理器状态
-        if not token_manager.is_healthy:
-            raise Exception("Token管理器状态异常，请确保token管理器正在运行")
-            
         action = kwargs.get("action")
         try:
             if action == "list_sms":
@@ -161,102 +163,40 @@ class MiCloudTool(BaseTool):
     
     async def list_sms(self, limit: int = 20) -> Dict[str, Any]:
         """获取短信列表"""
+        self.logger.info("开始获取短信列表...")
+        
+        ts = int(datetime.now().timestamp() * 1000)
         params = {
-            "syncTag": "0",  # 先使用0，让服务器返回最新数据
+            "syncTag": "0",
             "syncThreadTag": "0",
-            "limit": str(max(limit, 100)),  # 至少获取100条
+            "limit": str(limit),
             "readMode": "older",
             "withPhoneCall": "true",
-            "filterSpNumber": "false"  # 不过滤任何号码
+            "ts": ts,
+            "_dc": ts
         }
         
+        self.logger.info(f"请求参数: {params}")
+        
         try:
-            logger.info("开始获取短信列表...")
-            logger.info(f"请求参数: {params}")
+            url = f"{self.base_url}/sms/full/thread"
+            data = await self._make_request(url, params)
             
-            data = await self._make_request("/sms/full/thread", params)  # 改回正确的API端点
-            logger.info(f"服务器响应: {json.dumps(data, ensure_ascii=False)[:1000]}")
-            
-            # 格式化数据
-            logger.info("开始格式化短信数据...")
-            formatted_data = await self._format_sms_data(data)
-            
-            if formatted_data["status"] != "success":
-                return formatted_data
-                
-            # 构建友好的返回消息
-            summary = formatted_data["summary"]
-            messages = formatted_data["messages"]
-            
-            # 获取最新的一条短信
-            latest_msg = None
-            for category in ["验证码", "通知提醒", "其他"]:
-                if messages[category]:
-                    msg = messages[category][0]
-                    if not latest_msg or msg["time"] > latest_msg["time"]:
-                        latest_msg = msg
-            
-            # 构建markdown格式的文本描述
-            text_lines = []
-            
-            if latest_msg:
-                text_lines.append("### 最新短信")
-                text_lines.append("")
-                text_lines.append(f"**发送时间**：{latest_msg['time']}")
-                text_lines.append(f"**发送号码**：{latest_msg['phone']}")
-                text_lines.append("**短信内容**：")
-                text_lines.append(f"{latest_msg['content']}")
-                if latest_msg['unread']:
-                    text_lines.append("")
-                    text_lines.append("*状态：未读*")
-                
-                text_lines.append("")
-                text_lines.append("### 短信统计")
-                text_lines.append("")
-                text_lines.append(f"- 总短信数：{summary['total_messages']}条")
-                if summary['unread_count'] > 0:
-                    text_lines.append(f"- 未读短信：{summary['unread_count']}条")
-                text_lines.append("")
-                text_lines.append("**分类统计**：")
-                for category, count in summary["categories"].items():
-                    text_lines.append(f"- {category}：{count}条")
-            else:
-                text_lines.append("### 无短信记录")
-                text_lines.append("")
-                text_lines.append("您的短信箱中暂时没有任何消息。")
-                text_lines.append("")
-                text_lines.append("可能的原因：")
-                text_lines.append("1. 手机未开启短信同步功能")
-                text_lines.append("2. 短信同步尚未完成")
-                text_lines.append("3. 所有短信已被清空")
-            
-            return {
-                "status": "success",
-                "text": "\n".join(text_lines),
-                "data": {
-                    "summary": {
-                        "total": summary["total_messages"],
-                        "unread": summary["unread_count"],
-                        "categories": summary["categories"]
-                    },
-                    "latest_message": latest_msg if latest_msg else None
+            if data.get("result") == "ok":
+                formatted_text = await self._format_sms_data(data)
+                return {
+                    "status": "success",
+                    "text": formatted_text,
+                    "data": data
                 }
-            }
-            
+            else:
+                raise Exception(f"获取短信列表失败: {data}")
+                
         except Exception as e:
-            logger.error(f"获取短信列表失败: {str(e)}")
-            logger.error(f"错误详情: {type(e).__name__}: {str(e)}")
-            text_lines = []
-            text_lines.append("### 获取短信失败")
-            text_lines.append("")
-            text_lines.append("抱歉，获取短信列表时出现错误。请确保：")
-            text_lines.append("1. 手机已开启短信同步功能")
-            text_lines.append("2. 网络连接正常")
-            text_lines.append("3. 账号登录状态有效")
-            
+            self.logger.error(f"获取短信列表失败: {str(e)}")
             return {
                 "status": "error",
-                "text": "\n".join(text_lines),
+                "text": "### 获取短信失败\n\n抱歉，获取短信列表时出现错误。请确保：\n1. 手机已开启短信同步功能\n2. 网络连接正常\n3. 账号登录状态有效",
                 "message": str(e)
             }
     
