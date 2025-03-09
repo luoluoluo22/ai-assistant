@@ -118,6 +118,18 @@ class MiCloudTokenService:
                 'inactiveTime': 10
             }
 
+            # 记录当前cookie
+            logger.info("当前cookie:")
+            if self.initial_cookie:
+                logger.info(f"初始cookie: {self.initial_cookie}")
+            if self.current_token:
+                logger.info(f"当前token: {self.current_token}")
+            logger.info(f"完整headers: {json.dumps(self.headers, ensure_ascii=False, indent=2)}")
+
+            # 使用完整的初始 cookie
+            if self.initial_cookie:
+                self.headers['cookie'] = self.initial_cookie
+
             response = requests.get(
                 self.base_url,
                 params=params,
@@ -125,32 +137,55 @@ class MiCloudTokenService:
                 allow_redirects=False
             )
 
+            # 记录响应信息
+            logger.info(f"响应状态码: {response.status_code}")
+            logger.info(f"响应cookies: {[f'{c.name}={c.value}' for c in response.cookies]}")
+            logger.info(f"响应头: {json.dumps(dict(response.headers), ensure_ascii=False, indent=2)}")
+            
+            # 记录响应内容
+            try:
+                response_content = response.json()
+                logger.info(f"响应内容: {json.dumps(response_content, ensure_ascii=False, indent=2)}")
+            except:
+                logger.info(f"响应内容: {response.text[:1000]}")  # 限制长度避免日志过大
+
             if response.status_code == 200:
                 new_token = None
                 for cookie in response.cookies:
                     if cookie.name == 'serviceToken':
                         new_token = cookie.value
+                        logger.info(f"获取到新token: {new_token}")
                         break
 
                 if new_token:
                     self.current_token = new_token
                     self._save_token(new_token)
-                    # 更新headers中的cookie
-                    self.headers['cookie'] = f'serviceToken={new_token}'
-                    logger.info("Token refreshed successfully")
+                    # 更新 cookie 时保持其他字段不变
+                    if self.initial_cookie:
+                        cookies = self.initial_cookie.split(';')
+                        updated_cookies = []
+                        for cookie in cookies:
+                            if 'serviceToken=' not in cookie:
+                                updated_cookies.append(cookie.strip())
+                        updated_cookies.append(f'serviceToken={new_token}')
+                        self.headers['cookie'] = '; '.join(updated_cookies)
+                        logger.info(f"更新后的完整cookie: {self.headers['cookie']}")
+                    else:
+                        self.headers['cookie'] = f'serviceToken={new_token}'
+                    logger.info("Token刷新成功")
                     return new_token
                 else:
-                    logger.warning("No serviceToken found in response cookies")
+                    logger.warning("响应cookies中未找到serviceToken")
             else:
-                logger.error(f"Failed to refresh token. Status code: {response.status_code}")
-                logger.error(f"Response content: {response.text}")
+                logger.error(f"刷新token失败. 状态码: {response.status_code}")
+                logger.error(f"响应内容: {response.text}")
 
         except Exception as e:
-            logger.error(f"Error refreshing token: {e}")
+            logger.error(f"刷新token时发生错误: {e}")
 
         return None
 
-    def start_token_refresh_service(self, interval=420):  # 7分钟 = 420秒
+    def start_token_refresh_service(self, interval=120):  # 2分钟 = 120秒
         """启动定时刷新服务"""
         logger.info(f"Starting token refresh service with {interval} seconds interval")
         while True:
