@@ -11,6 +11,7 @@ from app.tools.knowledge_base import KnowledgeBaseTool
 from app.tools.web_browser import WebBrowserTool
 from app.tools.email_tool import EmailTool
 from app.tools.system import SystemCommandTool
+from app.tools.micloud_tool import MiCloudTool
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ class ToolManager:
             "system_command": SystemCommandTool(),
             "knowledge_base": KnowledgeBaseTool(),
             "web_browser": WebBrowserTool(),
-            "email": EmailTool()
+            "email": EmailTool(),
+            "micloud": MiCloudTool()
         }
         
         # 设置工具执行函数映射
@@ -230,6 +232,18 @@ class ToolManager:
         """执行网页浏览工具"""
         operation = kwargs.pop('operation')  # 操作类型是必需的
         return await self.tool_instances["web_browser"].execute(operation, **kwargs)
+
+    async def execute_micloud(self, **kwargs) -> Dict[str, Any]:
+        """执行小米云服务工具操作"""
+        try:
+            result = await self.tool_instances["micloud"].execute(**kwargs)
+            return result
+        except Exception as e:
+            logger.error("MiCloud tool execution failed: %s", str(e), exc_info=True)
+            return {
+                "success": False,
+                "message": str(e)
+            }
 
     async def execute_email(self, **kwargs) -> Dict[str, Any]:
         """执行邮件工具操作"""
