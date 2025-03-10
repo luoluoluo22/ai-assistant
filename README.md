@@ -18,7 +18,7 @@
 
 1. 克隆项目
 ```bash
-git clone https://github.com/luoluoluo22/ai_assistant.git
+git clone https://github.com/luoluoluo22/ai-assistant.git
 cd ai_assistant
 ```
 

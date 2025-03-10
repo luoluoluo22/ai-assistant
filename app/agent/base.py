@@ -499,7 +499,7 @@ class Agent:
                     # 发送正在执行的步骤信息
                     yield {
                         "type": "step_start",
-                        "content": f"正在执行: {step['tool_name']}"
+                        "content": f"正在执行: {step['tool_name']}\n"
                     }
                     
                     # 异步执行步骤
@@ -544,7 +544,7 @@ class Agent:
                 # 4. 生成最终响应
                 yield {
                     "type": "thinking",
-                    "content": "##AI总结：\n"
+                    "content": "\n\n##AI总结：\n\n"
                 }
                 
                 response = await self._generate_response(

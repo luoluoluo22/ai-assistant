@@ -22,6 +22,7 @@ class MiCloudTool(BaseTool):
     2. 获取通话记录 (list_calls)
     3. 搜索短信内容 (search_sms)
     4. 导出数据 (export_data)
+    5. 获取相册列表 (list_photos)
     """
     
     @property
@@ -30,9 +31,9 @@ class MiCloudTool(BaseTool):
         return {
             "action": {
                 "type": "string",
-                "description": "要执行的操作：list_sms（获取短信列表）, list_calls（获取通话记录）, search_sms（搜索短信）, export_data（导出数据）",
+                "description": "要执行的操作：list_sms（获取短信列表）, list_calls（获取通话记录）, search_sms（搜索短信）, export_data（导出数据）, list_photos（获取相册列表）",
                 "required": True,
-                "enum": ["list_sms", "list_calls", "search_sms", "export_data"]
+                "enum": ["list_sms", "list_calls", "search_sms", "export_data", "list_photos"]
             },
             "limit": {
                 "type": "integer",
@@ -47,12 +48,12 @@ class MiCloudTool(BaseTool):
             },
             "start_time": {
                 "type": "string",
-                "description": "开始时间，格式：YYYY-MM-DD（search_sms操作可选）",
+                "description": "开始时间，格式：YYYY-MM-DD",
                 "required": False
             },
             "end_time": {
                 "type": "string",
-                "description": "结束时间，格式：YYYY-MM-DD（search_sms操作可选）",
+                "description": "结束时间，格式：YYYY-MM-DD",
                 "required": False
             },
             "export_type": {
@@ -61,6 +62,18 @@ class MiCloudTool(BaseTool):
                 "required": False,
                 "default": "sms",
                 "enum": ["sms", "calls"]
+            },
+            "page_num": {
+                "type": "integer",
+                "description": "页码（从0开始）",
+                "required": False,
+                "default": 0
+            },
+            "page_size": {
+                "type": "integer",
+                "description": "每页数量",
+                "required": False,
+                "default": 30
             }
         }
     
@@ -100,21 +113,28 @@ class MiCloudTool(BaseTool):
                 "i.mi.com_istrudev": "true"
             }
             
+            # 根据URL选择合适的referer
+            if "gallery" in url:
+                referer = "https://i.mi.com/gallery/h5"
+            else:
+                referer = "https://i.mi.com/sms/h5"
+            
             headers = {
                 "accept": "*/*",
-                "accept-encoding": "gzip, deflate, br",
+                "accept-encoding": "gzip, deflate, br, zstd",
                 "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "referer": "https://i.mi.com/sms/h5",
-                "sec-ch-ua": '"Not(A:Brand";v="99", "Microsoft Edge";v="133", "Chromium";v="133"',
+                "referer": referer,
+                "sec-ch-ua": '"Chromium";v="134", "Not:A-Brand";v="24", "Microsoft Edge";v="134"',
                 "sec-ch-ua-mobile": "?0", 
                 "sec-ch-ua-platform": '"Windows"',
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
-                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
                 "x-requested-with": "XMLHttpRequest",
                 "cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
-                "origin": "https://i.mi.com"
+                "origin": "https://i.mi.com",
+                "priority": "u=1, i"
             }
 
             async with aiohttp.ClientSession() as session:
@@ -199,6 +219,13 @@ class MiCloudTool(BaseTool):
                 )
             elif action == "export_data":
                 return await self.export_data(kwargs.get("export_type", "sms"))
+            elif action == "list_photos":
+                return await self.list_photos(
+                    kwargs.get("page_num", 0),
+                    kwargs.get("page_size", 30),
+                    kwargs.get("start_time"),
+                    kwargs.get("end_time")
+                )
             else:
                 raise ValueError(f"未知的操作: {action}")
         except Exception as e:
@@ -457,6 +484,120 @@ class MiCloudTool(BaseTool):
             return {
                 "status": "error",
                 "message": f"格式化短信数据失败: {str(e)}"
+            }
+
+    async def _format_gallery_data(self, galleries: List[Dict[str, Any]]) -> str:
+        """格式化相册数据为markdown格式"""
+        if not galleries:
+            return "### 相册列表\n\n暂无照片或视频。"
+        
+        # 按日期分组
+        date_groups = {}
+        for item in galleries:
+            # 处理整数类型的时间戳
+            timestamp = item.get("dateTaken", 0)
+            if isinstance(timestamp, int):
+                date_time = datetime.fromtimestamp(timestamp / 1000)  # 转换毫秒时间戳
+                date_taken = date_time.strftime("%Y-%m-%d")
+                time_taken = date_time.strftime("%H:%M:%S")
+            else:
+                # 如果不是整数，尝试按原来的方式处理
+                try:
+                    date_taken = str(timestamp).split()[0]
+                    time_taken = str(timestamp).split()[1]
+                except:
+                    date_taken = "未知日期"
+                    time_taken = "未知时间"
+            
+            if date_taken not in date_groups:
+                date_groups[date_taken] = []
+            item["formatted_time"] = time_taken  # 保存格式化后的时间
+            date_groups[date_taken].append(item)
+        
+        # 生成markdown文本
+        md_text = f"### 相册列表 (共 {len(galleries)} 个项目)\n\n"
+        
+        # 按日期倒序排序
+        for date in sorted(date_groups.keys(), reverse=True):
+            items = date_groups[date]
+            md_text += f"#### {date} ({len(items)} 个项目)\n\n"
+            
+            for item in items:
+                file_name = item.get("fileName", "未知文件名")
+                time = item.get("formatted_time", "未知时间")
+                item_type = "📷" if item.get("type") == "image" else "🎥"
+                
+                # 从 thumbnailInfo.data 获取URL
+                thumbnail_info = item.get("thumbnailInfo", {})
+                url = ""
+                if thumbnail_info and "data" in thumbnail_info:
+                    url = thumbnail_info["data"]
+                
+                size_mb = item.get("size", 0) / 1024 / 1024  # 转换为MB
+                
+                # 新的格式：[!文件名](URL) 时间|大小
+                if url:
+                    md_text += f"- ![{file_name}]({url}) *{time}* | {size_mb:.2f}MB\n\n"
+                else:
+                    md_text += f"- {item_type} {file_name} *{time}* | {size_mb:.2f}MB\n\n"
+        
+        return md_text
+
+    async def list_photos(self, page_num: int = 0, page_size: int = 30, start_time: str = None, end_time: str = None) -> Dict[str, Any]:
+        """获取相册列表"""
+        self.logger.info("开始获取相册列表...")
+        
+        # 处理时间参数
+        if not start_time:
+            start_time = "20241120"  # 使用固定的日期，避免使用未来日期
+        else:
+            start_time = datetime.strptime(start_time, "%Y-%m-%d").strftime("%Y%m%d")
+            
+        if not end_time:
+            end_time = start_time
+        else:
+            end_time = datetime.strptime(end_time, "%Y-%m-%d").strftime("%Y%m%d")
+        
+        # 构建请求参数
+        params = {
+            "ts": str(int(datetime.now().timestamp() * 1000)),  # 使用当前时间戳
+            "startDate": start_time,
+            "endDate": end_time,
+            "pageNum": str(page_num),
+            "pageSize": str(page_size)
+        }
+        
+        self.logger.info(f"请求参数: {params}")
+        
+        try:
+            url = f"{self.base_url}/gallery/user/galleries"
+            self.logger.info(f"请求URL: {url}")
+            
+            # 使用 _make_request 方法发送请求
+            data = await self._make_request(url, params)
+            
+            if data.get("result") == "ok" or (isinstance(data, dict) and data.get("R") == 200):
+                galleries = data.get("data", {}).get("galleries", [])
+                self.logger.info(f"获取到 {len(galleries)} 个相册项目")
+                
+                # 格式化相册数据为markdown格式
+                formatted_text = await self._format_gallery_data(galleries)
+                
+                result = {
+                    "success": True,
+                    "result": formatted_text
+                }
+                return result
+            else:
+                error_msg = f"获取相册列表失败: {data}"
+                self.logger.error(error_msg)
+                raise Exception(error_msg)
+                
+        except Exception as e:
+            self.logger.error(f"获取相册列表失败: {str(e)}")
+            return {
+                "success": False,
+                "result": "### 获取相册失败\n\n获取相册列表时出现错误。请确保：\n1. 账号登录状态有效\n2. 网络连接正常\n3. 相册访问权限正常"
             }
 
     async def __aenter__(self):
