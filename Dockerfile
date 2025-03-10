@@ -2,11 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 配置apt源为清华镜像源
-RUN echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bullseye main contrib non-free" > /etc/apt/sources.list && \
-  echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bullseye-updates main contrib non-free" >> /etc/apt/sources.list && \
-  echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bullseye-security main contrib non-free" >> /etc/apt/sources.list
-
 # 安装系统依赖和编译工具
 RUN apt-get update && apt-get install -y \
   build-essential \
@@ -14,9 +9,6 @@ RUN apt-get update && apt-get install -y \
   gcc \
   curl \
   && rm -rf /var/lib/apt/lists/*
-
-# 配置pip使用清华源
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制requirements.txt
 COPY requirements.txt .
