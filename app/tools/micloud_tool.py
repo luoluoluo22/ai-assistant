@@ -89,14 +89,14 @@ class MiCloudTool(BaseTool):
             
             # 构建完整的cookies
             cookies = {
-                "serviceToken": token_data["serviceToken"],
-                "userId": "627885182",
-                "i.mi.com_slh": "4B7bWQrk1AmtzPRtWza/ZWD3vuM=",
-                "Hm_lvt_c3e3e8b3ea48955284516b186acf0f4e": "1731677276",
-                "uLocale": "zh_CN",
-                "iplocale": "zh_CN",
+                "serviceToken": token_data.get("serviceToken"),
+                "userId": token_data.get("userId", "627885182"),
+                "i.mi.com_slh": token_data.get("slh", "MY+I/qqT78I0523bJgPAkcG+OBQ="),
+                "Hm_lvt_c3e3e8b3ea48955284516b186acf0f4e": str(int(datetime.now().timestamp())),
+                "uLocale": token_data.get("uLocale", "zh_CN"),
+                "iplocale": token_data.get("iplocale", "zh_CN"),
                 "i.mi.com_isvalid_servicetoken": "true",
-                "i.mi.com_ph": "nWAmPwpg3taPGEwEXYYm5Q==",
+                "i.mi.com_ph": token_data.get("ph", "nWAmPwpg3taPGEwEXYYm5Q=="),
                 "i.mi.com_istrudev": "true"
             }
             
@@ -121,8 +121,58 @@ class MiCloudTool(BaseTool):
                 async with session.get(url, params=params, headers=headers) as response:
                     self.logger.info(f"响应状态码: {response.status}")
                     
+                    # 处理响应cookies
+                    new_cookies = {}
+                    for cookie in response.cookies.values():
+                        # 保存所有cookie值
+                        if cookie.value:  # 只保存有值的cookie
+                            if cookie.key == "serviceToken":
+                                new_cookies["serviceToken"] = cookie.value
+                            elif cookie.key == "userId":
+                                new_cookies["userId"] = cookie.value
+                            elif cookie.key == "i.mi.com_slh":
+                                new_cookies["slh"] = cookie.value
+                            elif cookie.key == "i.mi.com_ph":
+                                new_cookies["ph"] = cookie.value
+                            elif cookie.key == "uLocale":
+                                new_cookies["uLocale"] = cookie.value
+                            elif cookie.key == "iplocale":
+                                new_cookies["iplocale"] = cookie.value
+                            elif cookie.key == "i.mi.com_isvalid_servicetoken":
+                                new_cookies["isvalid_servicetoken"] = cookie.value
+                            elif cookie.key == "i.mi.com_istrudev":
+                                new_cookies["istrudev"] = cookie.value
+                            elif cookie.key == "Hm_lvt_c3e3e8b3ea48955284516b186acf0f4e":
+                                new_cookies["hm_lvt"] = cookie.value
+                    
+                    # 如果有新的cookie值，更新token文件
+                    if new_cookies:
+                        # 保留原有的cookie值
+                        for key in new_cookies:
+                            token_data[key] = new_cookies[key]
+                        
+                        # 保存完整的cookie字符串
+                        token_data["full_cookie"] = headers["cookie"]
+                        
+                        with open(token_file, 'w') as f:
+                            json.dump(token_data, f, indent=2)
+                            self.logger.info("Token文件已更新")
+                    
                     if response.status == 200:
                         return await response.json()
+                    elif response.status == 401:
+                        # 尝试使用现有cookie重新请求
+                        self.logger.info("Token可能已过期，尝试使用现有cookie重新请求")
+                        cookies["i.mi.com_isvalid_servicetoken"] = "true"
+                        headers["cookie"] = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+                        
+                        async with session.get(url, params=params, headers=headers) as retry_response:
+                            if retry_response.status == 200:
+                                return await retry_response.json()
+                            else:
+                                text = await retry_response.text()
+                                self.logger.error(f"重试请求失败: {text[:200]}")
+                                raise Exception(f"重试请求失败: {text[:200]}")
                     else:
                         text = await response.text()
                         self.logger.error(f"请求失败: {text[:200]}")

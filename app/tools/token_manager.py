@@ -7,11 +7,12 @@ from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
-class MiCloudTokenManager:
+class TokenManager:
     """小米云服务Token管理器"""
     
     def __init__(self):
-        self.token_file = Path("./data/tokens/micloud_token.json")
+        """初始化 token 管理器"""
+        self.token_file = Path("./data/micloud_token.json")
         self.last_valid_token_file = Path("./data/tokens/last_valid_token.json")
         self.token_file.parent.mkdir(parents=True, exist_ok=True)
         
@@ -105,7 +106,7 @@ class MiCloudTokenManager:
         return current_token.copy()
 
 # 创建全局token管理器实例
-token_manager = MiCloudTokenManager()
+token_manager = TokenManager()
 
 async def get_token() -> Dict[str, str]:
     """获取当前有效的token"""
