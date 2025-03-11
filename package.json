@@ -1,0 +1,17 @@
+{
+  "name": "ai-assistant",
+  "version": "1.0.0",
+  "description": "AI Assistant Service",
+  "scripts": {
+    "start:api": "python -m uvicorn app.main:app --host 0.0.0.0 --port 8001",
+    "start:token": "python -m app.services.micloud_token_service",
+    "start": "pm2 start process_manager/ecosystem.config.js",
+    "stop": "pm2 stop all",
+    "restart": "pm2 restart all",
+    "status": "pm2 status",
+    "logs": "pm2 logs",
+    "monitor": "pm2 monit"
+  },
+  "author": "luoluoluo22",
+  "license": "MIT"
+} 

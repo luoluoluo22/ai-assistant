@@ -25,6 +25,7 @@ cd ai_assistant
 2. 安装依赖
 ```bash
 pip install -r requirements.txt
+npm install -g pm2  # 安装进程管理器
 ```
 
 3. 配置环境变量
@@ -33,8 +34,18 @@ cp .env.example .env
 ```
 
 4. 启动服务
+
+Windows:
+```powershell
+cd process_manager
+.\manage.ps1 start
+```
+
+Linux/MacOS:
 ```bash
-python run.py
+cd process_manager
+chmod +x manage.sh
+./manage.sh start
 ```
 
 ## 环境配置说明
@@ -126,7 +137,7 @@ MICLOUD_COOKIE='your_micloud_cookie'
 
 启动服务：
 ```bash
-python scripts/run_micloud_token_service.py
+python -m app.services.micloud_token_service
 ```
 
 Token 会每7分钟自动刷新一次，并保存在 `data/micloud_token.json` 文件中。
@@ -180,3 +191,100 @@ MIT License
 
 - GitHub: [@luoluoluo22](https://github.com/luoluoluo22)
 - Email: 1137583371@qq.com
+
+## 进程管理
+
+项目使用 PM2 进行进程管理，支持 Windows、Linux 和 MacOS。
+
+### 快速启动
+
+安装 PM2：
+```bash
+npm install pm2 -g
+```
+
+启动服务：
+```bash
+pm2 start ./process_manager/ecosystem.config.js
+```
+
+### 常用命令
+
+```bash
+# 启动服务
+pm2 start ./process_manager/ecosystem.config.js
+
+# 停止服务
+pm2 stop fastapi-app
+
+# 重启服务
+pm2 restart fastapi-app
+
+# 删除服务
+pm2 delete fastapi-app
+
+# 查看服务状态
+pm2 status
+
+# 查看日志
+pm2 logs fastapi-app
+
+# 监控服务
+pm2 monit
+```
+
+### PM2 配置说明
+
+配置文件位置：`process_manager/ecosystem.config.js`
+
+主要配置项：
+```javascript
+{
+  name: "fastapi-app",        // 服务名称
+  script: "run.py",           // 启动脚本
+  interpreter: "python",      // 解释器
+  args: "--service fastapi",  // 启动参数
+  watch: false,              // 是否监视文件变化
+  instances: 1,              // 实例数量
+  exec_mode: "fork",         // 执行模式
+  env: {                     // 环境变量
+    NODE_ENV: "development",
+    PYTHONUNBUFFERED: "1"
+  }
+}
+```
+
+### 服务器部署
+
+1. 确保服务器已安装 Python 和 Node.js
+2. 安装 PM2：`npm install pm2 -g`
+3. 克隆项目并安装依赖
+4. 配置环境变量
+5. 使用 PM2 启动服务
+
+```bash
+# 启动服务
+pm2 start ./process_manager/ecosystem.config.js
+
+# 设置开机自启
+pm2 startup
+pm2 save
+```
+
+### 日志管理
+
+PM2 日志文件默认位置：
+- Linux/MacOS: `~/.pm2/logs/`
+- Windows: `%HOMEDRIVE%%HOMEPATH%\.pm2\logs\`
+
+查看日志：
+```bash
+# 实时查看日志
+pm2 logs fastapi-app
+
+# 查看历史日志
+pm2 logs fastapi-app --lines 1000
+
+# 清空日志
+pm2 flush
+```
