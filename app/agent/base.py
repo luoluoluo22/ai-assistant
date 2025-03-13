@@ -40,7 +40,7 @@ class Agent:
         frequency_penalty: float = 0.0,
         presence_penalty: float = 0.0,
         stream: bool = False
-    ) -> str:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process user message and return response.
         
         Args:
@@ -62,72 +62,63 @@ class Agent:
             "content": message
         })
         
-        # 2. 分析用户意图和需要执行的步骤
+        # 2. 处理用户消息并执行工具调用
         logger.info("Processing message: %s", message)
-        max_retries = 3
-        retry_count = 0
         current_message = message
         all_results = []
+        max_iterations = 10  # 防止无限循环
+        iteration_count = 0
         
-        while retry_count < max_retries:
-            # 获取下一步计划
-            plan = await self._create_plan(
+        while iteration_count < max_iterations:
+            iteration_count += 1
+            logger.info(f"Iteration {iteration_count} of {max_iterations}")
+            
+            # 发送正在思考的提示
+            yield {
+                "type": "thinking",
+                "content": "AI正在思考..."
+            }
+            
+            # 获取模型响应
+            response = await self.tool_service.chat_completion(
                 current_message,
+                system_prompt=self.system_prompt,
                 model=model,
-                temperature=0.2,  # 使用较低的温度以获得更确定的计划
+                temperature=temperature,
                 max_tokens=max_tokens,
                 top_p=top_p,
                 frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-                stream=stream
+                presence_penalty=presence_penalty
             )
             
-            if not plan:  # 如果没有计划，说明任务完成或不需要执行任何操作
+            logger.info("AI 响应:\n%s", response)
+            
+            # 尝试从响应中提取工具调用
+            tool_call = self._extract_tool_call(response)
+            
+            # 如果没有工具调用或者是任务完成工具，结束循环
+            if not tool_call or tool_call.get("tool_name") == "task_complete":
                 break
-                
-            # 只执行计划中的第一步
-            step = plan[0]
-            logger.info("Executing step: %s", json.dumps(step, ensure_ascii=False))
             
             # 执行工具调用
-            result = await self._execute_step(step)
+            logger.info("Executing tool: %s", json.dumps(tool_call, ensure_ascii=False))
+            result = await self._execute_step(tool_call)
             all_results.append(result)
             
             # 更新工具执行结果历史
             self.context["tool_results"].append({
-                "step": step,
+                "step": tool_call,
                 "result": result
             })
             
-            # 修改错误判断逻辑
-            has_error = False
-            if result.get("status") == "error":
-                has_error = True
-            elif result.get("return_code", 0) != 0:
-                has_error = True
-            elif step['tool_name'] == 'email' and result.get('success') is False:
-                has_error = True
-            
-            if has_error:
-                failure_reason = result.get("message") or result.get("error") or "Unknown error"
-                if retry_count < max_retries - 1:
-                    current_message = f"{message}\n执行失败原因: {failure_reason}\n请重新规划。"
-                    retry_count += 1
-                    logger.info(f"Retrying plan generation (attempt {retry_count + 1})")
-                    continue
-                break
-            
             # 将执行结果格式化为易于理解的形式
-            result_summary = self._format_step_result(step, result)
+            result_summary = self._format_step_result(tool_call, result)
             
-            # 根据执行结果更新消息，让 AI 规划下一步
-            current_message = f"{message}\n\n已执行步骤：\n{json.dumps(step, ensure_ascii=False)}\n\n执行结果：\n{result_summary}\n\n请根据以上结果规划下一步操作。如果任务已完成，请返回空数组 []。"
-            
-            # 重置重试计数
-            retry_count = 0
+            # 更新当前消息，包含执行结果
+            current_message = f"{message}\n\n已执行工具：\n{json.dumps(tool_call, ensure_ascii=False)}\n\n执行结果：\n{result_summary}\n\n请根据以上结果继续回答或执行下一个工具。如果任务已完成，请直接回答，不要调用工具。"
         
-        # 4. 生成最终响应
-        response = await self._generate_response(
+        # 3. 生成最终响应
+        final_response = await self._generate_response(
             message,
             all_results,
             model=model,
@@ -139,232 +130,55 @@ class Agent:
             stream=stream
         )
         
-        # 5. 更新对话历史
+        # 4. 更新对话历史
         self.context["conversation_history"].append({
             "role": "assistant",
-            "content": response
+            "content": final_response
         })
         
-        return response
+        yield {
+            "type": "response",
+            "content": final_response
+        }
     
-    async def _create_plan(
-        self,
-        message: str,
-        model: str = settings.DEFAULT_MODEL,
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        top_p: float = 0.95,
-        frequency_penalty: float = 0.0,
-        presence_penalty: float = 0.0,
-        stream: bool = False
-    ) -> List[Dict[str, Any]]:
-        """Create an execution plan based on user's message."""
-        try:
-            # 如果消息中包含明确的删除邮件指令，直接返回删除邮件的计划
-            if any(keyword in message for keyword in ['删除邮件', '删除它', '删除这封邮件']):
-                # 从上下文中获取最近的邮件 ID
-                recent_results = []
-                for item in self.context["tool_results"][::-1]:  # 倒序遍历
-                    if item["step"]["tool_name"] == "email" and item["step"]["parameters"].get("action") == "list_emails":
-                        if item["result"].get("success") and item["result"].get("result", {}).get("emails"):
-                            emails = item["result"]["result"]["emails"]
-                            if emails:
-                                message_id = emails[0].get("message_id")
-                                if message_id:
-                                    return [{
-                                        "tool_name": "email",
-                                        "parameters": {
-                                            "action": "delete_email",
-                                            "message_id": message_id
-                                        }
-                                    }]
-                        break  # 只检查最近的一次邮件列表结果
-                
-                logger.warning("未找到要删除的邮件 ID")
-                return []
-            
-            # 构建用户提示词，包含完整对话历史
-            history = []
-            seen_messages = set()  # 用于去重
-            
-            for msg in self.context["conversation_history"]:
-                msg_content = f"{msg['role']}：{msg['content']}"
-                if msg_content not in seen_messages:
-                    if msg["role"] == "user":
-                        history.append(f"用户：{msg['content']}")
-                    else:
-                        history.append(f"助手：{msg['content']}")
-                    seen_messages.add(msg_content)
-            
-            # 添加当前消息
-            current_msg = f"用户：{message}"
-            if current_msg not in seen_messages:
-                history.append(current_msg)
-                seen_messages.add(current_msg)
-            
-            # 构建强化的用户提示词
-            user_prompt = "当前对话历史：\n" + "\n".join(history) + "\n\n"
-            user_prompt += """请仔细分析用户的最新消息并生成下一步的执行计划。
-
-你必须以 JSON 数组格式返回执行计划，格式如下：
-[
-  {
-    "tool_name": "工具名称",
-    "parameters": {
-      "参数名": "参数值"
-    }
-  }
-]
-
-例如，如果用户要查看邮件，你应该返回：
-[
-  {
-    "tool_name": "email",
-    "parameters": {
-      "action": "list_emails"
-    }
-  }
-]
-
-如果任务已完成或不需要使用工具，返回空数组 []。
-不要返回任何其他格式的内容，必须是合法的 JSON 数组。"""
-            
-            # 调用 AI 服务生成执行计划
-            response = await self.tool_service.chat_completion(
-                user_prompt,
-                system_prompt=self.system_prompt,  # 添加系统提示词
-                model=model,
-                temperature=0.2,  # 使用较低的温度以获得更确定的执行计划
-                max_tokens=max_tokens,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty
-            )
-            
-            logger.info("AI 响应:\n%s", response)
-            
-            try:
-                # 如果响应中包含其他文本，尝试提取 JSON 部分
-                if '```json' in response:
-                    json_str = response.split('```json')[1].split('```')[0].strip()
-                    logger.debug("提取的 JSON:\n%s", json_str)
-                else:
-                    json_str = response.strip()
-                    logger.debug("使用完整响应作为 JSON:\n%s", json_str)
-                
-                plan = json.loads(json_str)
-                if not isinstance(plan, list):
-                    logger.warning("响应格式错误，期望 list 但得到: %s", type(plan))
-                    return []
-                
-                # 验证计划中的每个步骤
-                valid_plan = []
-                for step in plan:
-                    if not isinstance(step, dict):
-                        continue
-                    
-                    tool_name = step.get("tool_name")
-                    parameters = step.get("parameters", {})
-                    
-                    # 检查工具是否存在
-                    tool_def = self.tool_manager.get_tool_description(tool_name)
-                    if not tool_def:
-                        logger.warning("未找到工具: %s", tool_name)
-                        continue
-                    
-                    # 验证参数
-                    valid_params = {}
-                    has_invalid_params = False
-                    
-                    for param_name, param_info in tool_def["parameters"].items():
-                        if param_name in parameters:
-                            valid_params[param_name] = parameters[param_name]
-                        elif param_info.get("required", False):  # 默认参数为非必需
-                            logger.warning("工具 %s 缺少必需参数: %s", tool_name, param_name)
-                            has_invalid_params = True
-                            break
-                    
-                    if not has_invalid_params:
-                        # 所有参数都有效
-                        step["parameters"] = valid_params
-                        valid_plan.append(step)
-                
-                if valid_plan:
-                    logger.info("生成的执行计划:\n%s", json.dumps(valid_plan, ensure_ascii=False, indent=2))
-                else:
-                    logger.warning("没有生成有效的执行计划")
-                
-                return valid_plan
-                
-            except json.JSONDecodeError as e:
-                logger.error("Failed to parse AI response as JSON: %s\nError: %s", response, str(e))
-                return []
-            
-        except Exception as e:
-            logger.error("Failed to create plan: %s", str(e), exc_info=True)
-            return []
     
     async def _execute_step(self, step: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a single step in the plan.
         
         Args:
-            step: Step definition including tool name and parameters
+            step: Step to execute
             
         Returns:
-            Step execution results
+            Result of tool execution
         """
-        tool_name = step.get("tool_name")
-        parameters = step.get("parameters", {})
-        
-        # 验证工具是否存在
-        tool_definitions = self.tool_manager.get_tool_descriptions()
-        tool_def = next((t for t in tool_definitions if t["name"] == tool_name), None)
-        
-        if not tool_def:
-            return {
-                "success": False,
-                "message": f"Unknown tool: {tool_name}"
-            }
-            
-        # 验证参数
-        missing_params = []
-        for param_name, param_info in tool_def["parameters"].items():
-            if param_info.get("required", False) and param_name not in parameters:
-                missing_params.append(param_name)
-                
-        if missing_params:
-            return {
-                "success": False,
-                "message": f"Missing required parameters for {tool_name}: {', '.join(missing_params)}"
-            }
-            
-        # 执行工具
         try:
-            result = await self.tool_service.execute_tool_from_ai({
-                "tool_name": tool_name,
-                "parameters": parameters
-            })
+            # 记录执行计划
+            logger.info("生成的执行计划:\n%s", json.dumps(step, ensure_ascii=False, indent=2))
             
-            # 对特定工具的结果进行处理
-            if tool_name == 'micloud':
-                try:
-                    if result.get("status") == "success" and isinstance(result.get("text"), dict):
-                        text_obj = result["text"]
-                        if isinstance(text_obj.get("text"), dict):
-                            text_data = text_obj["text"]
-                            if isinstance(text_data, dict) and "markdown" in text_data:
-                                return text_data["markdown"]
-                        elif isinstance(text_obj, dict) and "markdown" in text_obj:
-                            return text_obj["markdown"]
-                except Exception as e:
-                    logger.error(f"处理 micloud 结果失败: {str(e)}")
+            # 验证工具请求
+            errors = self.tool_service.validate_tool_request(step)
+            if errors:
+                error_msg = f"工具请求验证失败: {', '.join(errors)}"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
+            
+            # 执行工具调用
+            result = await self.tool_service.execute_tool(step)
+            
+            # 记录执行结果
+            logger.debug("工具执行结果:\n%s", json.dumps(result, ensure_ascii=False, indent=2))
             
             return result
+            
         except Exception as e:
-            logger.error(f"Tool execution failed: {str(e)}", exc_info=True)
+            error_msg = f"Tool execution failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
             return {
-                "success": False,
-                "message": str(e)
+                "status": "error",
+                "message": error_msg
             }
     
     async def _generate_response(
@@ -470,116 +284,117 @@ class Agent:
                 "content": message
             })
             
-            # 2. 分析用户意图和生成执行计划
+            # 2. 处理用户意图和生成执行计划
             logger.info("Processing message: %s", message)
+            current_message = message
+            all_results = []
+            max_iterations = 10  # 防止无限循环
+            iteration_count = 0
             
-            # 生成执行计划
-            plan = await self._create_plan(
-                message,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-                stream=True
-            )
-            
-            if plan:
-                # 生成计划响应
-                plan_md = "使用工具：\n\n```json\n" + json.dumps(plan, ensure_ascii=False, indent=2) + "\n```\n"
-                yield {
-                    "type": "plan",
-                    "content": plan_md
-                }
+            while iteration_count < max_iterations:
+                iteration_count += 1
+                logger.info(f"Iteration {iteration_count} of {max_iterations}")
                 
-                # 3. 执行计划中的每个步骤
-                results = []
-                for step in plan:
-                    # 发送正在执行的步骤信息
-                    yield {
-                        "type": "step_start",
-                        "content": f"正在执行: {step['tool_name']}\n"
-                    }
-                    
-                    # 异步执行步骤
-                    result = await self._execute_step(step)
-                    results.append(result)
-                    
-                    # 处理工具执行结果
-                    if isinstance(result, dict):
-                        if result.get("success") is False:
-                            error_message = result.get("result", "未知错误")
-                            yield {
-                                "type": "error",
-                                "content": error_message
-                            }
-                            continue
-                        
-                        if "result" in result:
-                            yield {
-                                "type": "step_result",
-                                "content": result["result"]
-                            }
-                        else:
-                            step_md = self._format_step_result(step, result)
-                            if step_md.strip():
-                                yield {
-                                    "type": "step_result",
-                                    "content": step_md
-                                }
-                    elif isinstance(result, str):
-                        if result.strip():
-                            yield {
-                                "type": "step_result",
-                                "content": result
-                            }
-                    
-                    # 更新工具执行结果历史
-                    self.context["tool_results"].append({
-                        "step": step,
-                        "result": result
-                    })
-                
-                # 4. 生成最终响应
+                # 发送正在思考的提示
                 yield {
                     "type": "thinking",
-                    "content": "\n\n##AI总结：\n\n"
+                    "content": "\n🤔 AI正在思考...\n"
                 }
                 
-                response = await self._generate_response(
-                    message,
-                    results,
+                # 获取模型响应
+                response = await self.tool_service.chat_completion(
+                    current_message,
+                    system_prompt=self.system_prompt,
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
                     top_p=top_p,
                     frequency_penalty=frequency_penalty,
-                    presence_penalty=presence_penalty,
-                    stream=True
+                    presence_penalty=presence_penalty
                 )
                 
-                # 5. 更新对话历史
-                self.context["conversation_history"].append({
-                    "role": "assistant",
-                    "content": response
+                logger.info("AI 响应:\n%s", response)
+                
+                # 尝试从响应中提取工具调用
+                tool_call = self._extract_tool_call(response)
+                
+                # 如果没有工具调用，结束循环
+                if not tool_call:
+                    break
+
+                # 发送正在执行的步骤信息
+                tool_info = f"\n🔧 执行工具: {tool_call['tool_name']}\n"
+                tool_info += "📝 参数:\n```json\n"
+                tool_info += json.dumps(tool_call.get('parameters', {}), ensure_ascii=False, indent=2)
+                tool_info += "\n```\n"
+                yield {
+                    "type": "step_start",
+                    "content": tool_info
+                }
+                
+                # 执行工具调用
+                logger.info("Executing tool: %s", json.dumps(tool_call, ensure_ascii=False))
+                result = await self._execute_step(tool_call)
+                all_results.append(result)
+                
+                # 更新工具执行结果历史
+                self.context["tool_results"].append({
+                    "step": tool_call,
+                    "result": result
                 })
                 
-                # 6. 返回最终响应
-                yield {
-                    "type": "response",
-                    "content": response
-                }
-            else:
-                # 如果没有执行计划，直接生成响应
+                # 处理工具执行结果
+                if isinstance(result, dict):
+                    # 修改错误判断逻辑
+                    has_error = False
+                    if result.get("status") == "error":
+                        has_error = True
+                    elif result.get("return_code", 0) != 0:
+                        has_error = True
+                    elif tool_call['tool_name'] == 'email' and result.get('success') is False:
+                        has_error = True
+                    
+                    if has_error:
+                        error_message = result.get("message", "未知错误")
+                        yield {
+                            "type": "error",
+                            "content": f"\n❌ 错误:\n{error_message}\n"
+                        }
+                        # 如果是删除邮件失败，继续尝试下一封
+                        if tool_call['tool_name'] == 'email' and tool_call.get('parameters', {}).get('action') == 'delete_email':
+                            continue
+                        break
+                    
+                    # 格式化结果
+                    formatted_result = self._format_step_result(tool_call, result)
+                    if formatted_result.strip():
+                        yield {
+                            "type": "step_result",
+                            "content": f"\n✅ 执行结果:\n{formatted_result}\n"
+                        }
+                elif isinstance(result, str):
+                    if result.strip():
+                        yield {
+                            "type": "step_result",
+                            "content": f"\n✅ 执行结果:\n{result}\n"
+                        }
+                
+                # 将执行结果格式化为易于理解的形式
+                result_summary = self._format_step_result(tool_call, result)
+                
+                # 更新当前消息，包含执行结果
+                current_message = f"{message}\n\n已执行工具：\n{json.dumps(tool_call, ensure_ascii=False)}\n\n执行结果：\n{result_summary}\n\n请根据以上结果继续回答或执行下一个工具。如果任务已完成，请直接回答，不要调用工具。"
+            
+            # 如果不是通过 task_complete 结束的，生成最终响应
+            if not tool_call or tool_call.get("tool_name") != "task_complete":
                 yield {
                     "type": "thinking",
-                    "content": "##AI总结：\n"
+                    "content": "\n🤔 AI正在总结...\n"
                 }
                 
                 response = await self._generate_response(
                     message,
-                    [],
+                    all_results,
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -595,17 +410,17 @@ class Agent:
                     "content": response
                 })
                 
-                # 返回响应
+                # 返回最终响应
                 yield {
                     "type": "response",
-                    "content": response
+                    "content": f"\n{response}\n"
                 }
             
         except Exception as e:
             logger.error("Error in stream_message: %s", str(e), exc_info=True)
             yield {
                 "type": "error",
-                "content": f"处理消息时发生错误: {str(e)}"
+                "content": f"\n❌ 处理消息时发生错误:\n{str(e)}\n"
             }
             
     def _format_step_result(self, step: Dict[str, Any], result: Dict[str, Any]) -> str:
@@ -651,7 +466,7 @@ class Agent:
                 for doc in data:
                     md += f"**文档 ID:** `{doc.get('id', 'N/A')}`\n"
                     md += f"**标题:** {doc.get('title', '无标题')}\n"
-                    md += f"**内容:**\n```\n{doc.get('content', '无内容')}\n```\n"
+                    md += f"**内容:** \n```\n{doc.get('content', '无内容')}\n```\n"
                     md += f"**创建时间:** {doc.get('created_at', 'N/A')}\n\n"
                 return md
             return "搜索结果格式错误\n\n"
@@ -661,7 +476,7 @@ class Agent:
                 md = "成功创建文档：\n\n"
                 md += f"**文档 ID:** `{data.get('id', 'N/A')}`\n"
                 md += f"**标题:** {data.get('title', '无标题')}\n"
-                md += f"**内容:**\n```\n{data.get('content', '无内容')}\n```\n"
+                md += f"**内容:** \n```\n{data.get('content', '无内容')}\n```\n"
                 md += f"**创建时间:** {data.get('created_at', 'N/A')}\n\n"
                 return md
             return "创建文档格式错误\n\n"
@@ -671,7 +486,7 @@ class Agent:
                 md = "成功更新文档：\n\n"
                 md += f"**文档 ID:** `{data.get('id', 'N/A')}`\n"
                 md += f"**标题:** {data.get('title', '无标题')}\n"
-                md += f"**内容:**\n```\n{data.get('content', '无内容')}\n```\n"
+                md += f"**内容:** \n```\n{data.get('content', '无内容')}\n```\n"
                 md += f"**更新时间:** {data.get('updated_at', 'N/A')}\n\n"
                 return md
             return "更新文档格式错误\n\n"
@@ -684,7 +499,7 @@ class Agent:
                 md = "获取到的文档：\n\n"
                 md += f"**文档 ID:** `{data.get('id', 'N/A')}`\n"
                 md += f"**标题:** {data.get('title', '无标题')}\n"
-                md += f"**内容:**\n```\n{data.get('content', '无内容')}\n```\n"
+                md += f"**内容:** \n```\n{data.get('content', '无内容')}\n```\n"
                 md += f"**创建时间:** {data.get('created_at', 'N/A')}\n\n"
                 return md
             return "获取文档格式错误\n\n"
@@ -708,69 +523,62 @@ class Agent:
         
         if action == 'list_emails':
             # 首先检查是否有 success 和 result 字段
-            if isinstance(result.get('success'), bool) and result.get('result'):
-                result_data = result['result']
-                # 检查是否有 status 和 emails 字段
-                if result_data.get('status') == 'success' and isinstance(result_data.get('emails'), list):
-                    emails = result_data['emails']
-                    md = f"找到 {len(emails)} 封邮件：\n\n"
+            if result.get('success') and isinstance(result.get('result', {}).get('emails'), list):
+                emails = result['result']['emails']
+                if not emails:
+                    return "没有找到任何邮件"
+                
+                md = f"找到 {len(emails)} 封邮件：\n\n"
+                for email in emails:
+                    md += "---\n"
+                    message_id = email.get('message_id', 'N/A')
+                    subject = email.get('subject', '无主题')
+                    sender = email.get('from', '未知')
+                    date = email.get('date', '未知')
+                    body = email.get('body', '')
                     
-                    for email in emails:
-                        md += "---\n"
-                        message_id = email.get('message_id', 'N/A')
-                        subject = email.get('subject', '无主题')
-                        sender = email.get('from', '未知')
-                        date = email.get('date', '未知')
-                        body = email.get('body', '')
-                        
-                        md += f"**邮件 ID:** `{message_id}`\n"
-                        md += f"**主题:** {subject}\n"
-                        md += f"**发件人:** {sender}\n"
-                        md += f"**日期:** {date}\n"
-                        
-                        if body:
-                            # 如果是 HTML 内容，尝试提取纯文本
-                            if body.strip().startswith('<!DOCTYPE html') or body.strip().startswith('<html'):
-                                # 简单提取文本，去除 HTML 标签
-                                text_content = body.replace('</div>', '\n').replace('</p>', '\n')
-                                for tag in ['<br />', '<br/>', '<br>', '\r\n', '\n\n']:
-                                    text_content = text_content.replace(tag, '\n')
-                                    
-                                # 移除所有 HTML 标签
-                                import re
-                                text_content = re.sub(r'<[^>]+>', '', text_content)
+                    md += f"📧 邮件 ID: `{message_id}`\n"
+                    md += f"📑 主题: {subject}\n"
+                    md += f"👤 发件人: {sender}\n"
+                    md += f"📅 日期: {date}\n"
+                    
+                    if body:
+                        # 如果是 HTML 内容，尝试提取纯文本
+                        if body.strip().startswith('<!DOCTYPE html') or body.strip().startswith('<html'):
+                            # 简单提取文本，去除 HTML 标签
+                            text_content = body.replace('</div>', '\n').replace('</p>', '\n')
+                            for tag in ['<br />', '<br/>', '<br>', '\r\n', '\n\n']:
+                                text_content = text_content.replace(tag, '\n')
                                 
-                                # 清理空白行和多余空格
-                                lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                                text_content = '\n'.join(lines)
-                                
-                                # 限制预览长度
-                                preview = text_content[:500] + ('...' if len(text_content) > 500 else '')
-                            else:
-                                preview = body[:500] + ('...' if len(body) > 500 else '')
+                            # 移除所有 HTML 标签
+                            import re
+                            text_content = re.sub(r'<[^>]+>', '', text_content)
                             
-                            md += f"**内容预览:**\n```\n{preview}\n```\n"
+                            # 清理空白行和多余空格
+                            lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                            text_content = '\n'.join(lines)
+                            
+                            # 限制预览长度
+                            preview = text_content[:500] + ('...' if len(text_content) > 500 else '')
+                        else:
+                            preview = body[:500] + ('...' if len(body) > 500 else '')
                         
-                        # 添加其他可能有用的字段
-                        for key, value in email.items():
-                            if key not in ['message_id', 'subject', 'from', 'date', 'body']:
-                                md += f"**{key}:** {value}\n"
-                        
-                        md += "\n"
-                    return md
+                        md += f"📝 内容预览:\n```\n{preview}\n```\n"
+                    
+                    md += "\n"
+                return md
             
-            # 如果数据格式不是预期的，返回原始信息以供调试
-            return f"邮件信息（原始格式）：\n```json\n{json.dumps(result, ensure_ascii=False, indent=2)}\n```\n"
+            return "邮件列表获取失败或格式错误"
             
         elif action == 'delete_email':
             if result.get('success'):
-                return "邮件已成功删除\n\n"
+                return "✅ 邮件已成功删除"
             else:
-                error = result.get('error') or result.get('message') or '未知错误'
-                return f"删除邮件失败：{error}\n\n"
+                error = result.get('message', '未知错误')
+                return f"❌ 删除邮件失败：{error}"
         
         # 如果是其他操作或结果格式完全不符合预期，返回原始信息
-        return f"工具返回结果（原始格式）：\n```json\n{json.dumps(result, ensure_ascii=False, indent=2)}\n```\n"
+        return f"工具返回结果：\n```json\n{json.dumps(result, ensure_ascii=False, indent=2)}\n```"
     
     def _format_system_command_result(self, result: Dict[str, Any]) -> str:
         """Format system command result as markdown.
@@ -783,3 +591,96 @@ class Agent:
         """
         # 直接返回原始结果的JSON字符串
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _extract_tool_call(self, response: str) -> Optional[Dict[str, Any]]:
+        """从模型响应中提取工具调用信息
+        
+        Args:
+            response: 模型的响应文本
+            
+        Returns:
+            工具调用信息字典，如果没有找到工具调用则返回None
+        """
+        try:
+            # 尝试查找JSON格式的工具调用
+            # 1. 查找```json块
+            if '```json' in response:
+                json_blocks = response.split('```json')
+                for block in json_blocks[1:]:  # 跳过第一个分割（前导文本）
+                    json_str = block.split('```')[0].strip()
+                    try:
+                        tool_data = json.loads(json_str)
+                        if isinstance(tool_data, dict) and 'tool_name' in tool_data:
+                            return tool_data
+                        elif isinstance(tool_data, list) and len(tool_data) > 0 and isinstance(tool_data[0], dict) and 'tool_name' in tool_data[0]:
+                            return tool_data[0]
+                    except json.JSONDecodeError:
+                        continue
+            
+            # 2. 查找```块（可能是其他代码块格式）
+            if '```' in response:
+                code_blocks = response.split('```')
+                for i in range(1, len(code_blocks), 2):  # 只检查代码块内容
+                    try:
+                        tool_data = json.loads(code_blocks[i].strip())
+                        if isinstance(tool_data, dict) and 'tool_name' in tool_data:
+                            return tool_data
+                        elif isinstance(tool_data, list) and len(tool_data) > 0 and isinstance(tool_data[0], dict) and 'tool_name' in tool_data[0]:
+                            return tool_data[0]
+                    except json.JSONDecodeError:
+                        continue
+            
+            # 3. 尝试在整个响应中查找JSON对象
+            # 查找可能的JSON对象开始和结束位置
+            start_pos = response.find('{')
+            if start_pos != -1:
+                # 尝试解析从这个位置开始的JSON
+                try:
+                    # 使用简单的括号匹配来找到JSON对象的结束位置
+                    brace_count = 0
+                    end_pos = start_pos
+                    for i in range(start_pos, len(response)):
+                        if response[i] == '{':
+                            brace_count += 1
+                        elif response[i] == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                end_pos = i + 1
+                                break
+                    
+                    if end_pos > start_pos:
+                        json_str = response[start_pos:end_pos]
+                        tool_data = json.loads(json_str)
+                        if isinstance(tool_data, dict) and 'tool_name' in tool_data:
+                            return tool_data
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            
+            # 4. 查找数组形式的JSON
+            start_pos = response.find('[')
+            if start_pos != -1:
+                try:
+                    # 使用简单的括号匹配来找到JSON数组的结束位置
+                    bracket_count = 0
+                    end_pos = start_pos
+                    for i in range(start_pos, len(response)):
+                        if response[i] == '[':
+                            bracket_count += 1
+                        elif response[i] == ']':
+                            bracket_count -= 1
+                            if bracket_count == 0:
+                                end_pos = i + 1
+                                break
+                    
+                    if end_pos > start_pos:
+                        json_str = response[start_pos:end_pos]
+                        tool_data = json.loads(json_str)
+                        if isinstance(tool_data, list) and len(tool_data) > 0 and isinstance(tool_data[0], dict) and 'tool_name' in tool_data[0]:
+                            return tool_data[0]
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            
+            return None
+        except Exception as e:
+            logger.error("从响应中提取工具调用失败: %s", str(e), exc_info=True)
+            return None

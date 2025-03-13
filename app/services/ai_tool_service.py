@@ -224,14 +224,14 @@ class AIToolService:
         descriptions = self.tool_manager.get_tool_descriptions()
         return json.dumps(descriptions, indent=2)
     
-    async def execute_tool_from_ai(self, tool_request: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool based on AI's request.
+    async def execute_tool(self, tool_request: Dict[str, Any]) -> Dict[str, Any]:
+        """执行工具调用
         
         Args:
-            tool_request: Tool execution request from AI
+            tool_request: 工具调用请求，包含工具名称和参数
             
         Returns:
-            Tool execution results
+            工具执行结果
         """
         try:
             tool_name = tool_request.get("tool_name")
@@ -239,7 +239,7 @@ class AIToolService:
             
             if not tool_name:
                 raise ValueError("未指定工具名称")
-                
+            
             logger.info("执行工具: %s", tool_name)
             logger.debug("工具参数: %s", json.dumps(parameters, ensure_ascii=False))
             
@@ -254,7 +254,7 @@ class AIToolService:
         except Exception as e:
             logger.error("工具执行失败: %s", str(e), exc_info=True)
             return {
-                "success": False,
+                "status": "error",
                 "message": str(e)
             }
     

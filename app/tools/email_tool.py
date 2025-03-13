@@ -25,6 +25,7 @@ class EmailTool(BaseTool):
     3. 获取文件夹列表 (list_folders)
     4. 删除指定邮件 (delete_email)
     5. 切换邮箱类型 (switch_email_type)
+    6. 搜索邮件 (search_emails)
     
     支持的邮箱类型：
     - QQ邮箱 (qq)
@@ -159,8 +160,8 @@ class EmailTool(BaseTool):
         return {
             "action": {
                 "type": "string",
-                "description": "要执行的操作：list_emails（查看邮件列表）, send_email（发送邮件）, list_folders（查看文件夹）, delete_email（删除邮件）, switch_email_type（切换邮箱类型）",
-                "enum": ["list_emails", "send_email", "list_folders", "delete_email", "switch_email_type"],
+                "description": "要执行的操作：list_emails（查看邮件列表）, send_email（发送邮件）, list_folders（查看文件夹）, delete_email（删除邮件）, switch_email_type（切换邮箱类型）, search_emails（搜索邮件）",
+                "enum": ["list_emails", "send_email", "list_folders", "delete_email", "switch_email_type", "search_emails"],
                 "required": True
             },
             "email_type": {
@@ -177,6 +178,17 @@ class EmailTool(BaseTool):
             "limit": {
                 "type": "integer",
                 "description": "要获取的邮件数量限制，默认为10",
+                "required": False
+            },
+            "query": {
+                "type": "string",
+                "description": "搜索关键词（搜索邮件时必需），可以搜索邮件正文、主题或发件人",
+                "required": False
+            },
+            "search_type": {
+                "type": "string",
+                "description": "搜索类型：all（全文搜索）, body（仅搜索正文）, from（仅搜索发件人）, subject（仅搜索主题），默认为all",
+                "enum": ["all", "body", "from", "subject"],
                 "required": False
             },
             "to": {
@@ -209,7 +221,8 @@ class EmailTool(BaseTool):
             "发送新邮件",
             "查看所有邮件文件夹",
             "删除指定邮件",
-            "切换到 Gmail 邮箱"
+            "切换到 Gmail 邮箱",
+            "搜索包含特定关键词的邮件"
         ]
     
     def connect_imap(self):
@@ -292,6 +305,8 @@ class EmailTool(BaseTool):
                 )
             elif action == "switch_email_type":
                 result = await self._switch_email_type(kwargs.get("email_type"))
+            elif action == "search_emails":
+                result = await self._search_emails(kwargs.get("query"))
             else:
                 raise ValueError(f"Unknown action: {action}")
             
@@ -382,7 +397,10 @@ class EmailTool(BaseTool):
                         "body": msg.body or "(无内容)"
                     })
                 
-                return {"status": "success", "emails": email_list}
+                if not email_list:
+                    return {"success": True, "result": {"emails": []}}
+                
+                return {"success": True, "result": {"emails": email_list}}
             
             self.connect_imap()
             self.imap.select(folder)
@@ -483,13 +501,13 @@ class EmailTool(BaseTool):
             self.imap.logout()
             
             if not email_list:
-                return {"status": "success", "message": "没有找到邮件", "emails": []}
+                return {"success": True, "result": {"emails": []}}
                 
-            return {"status": "success", "emails": email_list}
+            return {"success": True, "result": {"emails": email_list}}
             
         except Exception as e:
             logger.error(f"获取邮件列表时出错: {str(e)}")
-            return {"status": "error", "message": f"获取邮件列表失败: {str(e)}"}
+            return {"success": False, "message": f"获取邮件列表失败: {str(e)}"}
         
     async def _send_email(self, to: str, subject: str, body: str) -> Dict[str, Any]:
         """发送邮件"""
@@ -566,7 +584,7 @@ class EmailTool(BaseTool):
                 message = mailbox.get_message(message_id)
                 message.delete()
                 
-                return {"status": "success", "message": "邮件已成功删除"}
+                return {"success": True, "message": "邮件已成功删除"}
             
             self.connect_imap()
             self.imap.select(folder)
@@ -580,14 +598,199 @@ class EmailTool(BaseTool):
             self.imap.logout()
             
             return {
-                "status": "success",
-                "message": f"邮件已成功删除"
+                "success": True,
+                "message": "邮件已成功删除"
             }
         except Exception as e:
             logger.error(f"删除邮件失败: {str(e)}")
             return {
-                "status": "error",
+                "success": False,
                 "message": f"删除邮件失败: {str(e)}"
+            }
+
+    async def _search_emails(self, query: str, search_type: str = "all", folder: str = "INBOX", limit: int = 10) -> Dict[str, Any]:
+        """搜索邮件
+        
+        Args:
+            query: 搜索关键词
+            search_type: 搜索类型，可选值：all（全文搜索）, body（仅搜索正文）, from（仅搜索发件人）, subject（仅搜索主题）
+            folder: 要搜索的文件夹，默认为INBOX
+            limit: 返回结果数量限制，默认为10
+            
+        Returns:
+            Dict[str, Any]: 搜索结果
+        """
+        try:
+            if not query:
+                return {
+                    "status": "error",
+                    "message": "搜索关键词不能为空"
+                }
+            
+            if self.current_email_type == "outlook":
+                if not self.outlook_account.is_authenticated:
+                    self.outlook_account.authenticate()
+                
+                mailbox = self.outlook_account.mailbox()
+                
+                # 根据文件夹名称获取对应的文件夹对象
+                if folder.lower() == "sent":
+                    outlook_folder = mailbox.sent_folder()
+                else:
+                    outlook_folder = mailbox.inbox_folder()
+                
+                # 构建搜索过滤器
+                if search_type == "from":
+                    search_query = f"from:{query}"
+                elif search_type == "subject":
+                    search_query = f"subject:{query}"
+                elif search_type == "body":
+                    search_query = f"body:{query}"
+                else:  # all
+                    search_query = query
+                
+                # 执行搜索
+                messages = list(outlook_folder.search(search_query, limit=limit))
+                email_list = []
+                
+                for msg in messages:
+                    # 获取收件人列表
+                    to_list = []
+                    if hasattr(msg, 'to'):
+                        to_list = [r.address for r in msg.to._recipients] if msg.to._recipients else []
+                    
+                    email_list.append({
+                        "message_id": msg.object_id,
+                        "subject": msg.subject or "(无主题)",
+                        "from": msg.sender.address if msg.sender else "(无发件人)",
+                        "to": to_list,
+                        "date": msg.received.strftime("%Y-%m-%d %H:%M:%S") if msg.received else "(无日期)",
+                        "body": msg.body or "(无内容)"
+                    })
+                
+                return {
+                    "status": "success",
+                    "emails": email_list,
+                    "total": len(email_list)
+                }
+            
+            self.connect_imap()
+            self.imap.select(folder)
+            
+            # 构建IMAP搜索条件
+            if search_type == "from":
+                search_criteria = f'FROM "{query}"'
+            elif search_type == "subject":
+                search_criteria = f'SUBJECT "{query}"'
+            elif search_type == "body":
+                search_criteria = f'BODY "{query}"'
+            else:  # all
+                search_criteria = f'OR OR FROM "{query}" SUBJECT "{query}" BODY "{query}"'
+            
+            _, messages = self.imap.search(None, search_criteria)
+            email_list = []
+            
+            # 获取最新的N封邮件
+            message_nums = messages[0].split()[-limit:]
+            
+            for num in message_nums:
+                try:
+                    _, msg = self.imap.fetch(num, "(RFC822)")
+                    email_message = email.message_from_bytes(msg[0][1])
+                    
+                    # 解码邮件头
+                    def safe_decode_header(header_value):
+                        if not header_value:
+                            return ""
+                        try:
+                            decoded_header = email.header.decode_header(header_value)
+                            decoded_parts = []
+                            for part, charset in decoded_header:
+                                if isinstance(part, bytes):
+                                    try:
+                                        if charset:
+                                            decoded_parts.append(part.decode(charset))
+                                        else:
+                                            for encoding in ['utf-8', 'gbk', 'gb2312', 'gb18030']:
+                                                try:
+                                                    decoded_parts.append(part.decode(encoding))
+                                                    break
+                                                except UnicodeDecodeError:
+                                                    continue
+                                    except Exception:
+                                        decoded_parts.append(part.decode('ascii', errors='ignore'))
+                                else:
+                                    decoded_parts.append(str(part))
+                            return ' '.join(decoded_parts)
+                        except Exception as e:
+                            logger.error(f"解码邮件头时出错: {str(e)}")
+                            return str(header_value)
+                    
+                    subject = safe_decode_header(email_message.get("Subject")) or "(无主题)"
+                    from_ = safe_decode_header(email_message.get("From")) or "(无发件人)"
+                    date = safe_decode_header(email_message.get("Date")) or "(无日期)"
+                    
+                    # 解码邮件正文
+                    def safe_decode_payload(part):
+                        try:
+                            payload = part.get_payload(decode=True)
+                            if not payload:
+                                return ""
+                            
+                            charset = part.get_content_charset()
+                            if charset:
+                                try:
+                                    return payload.decode(charset)
+                                except UnicodeDecodeError:
+                                    pass
+                            
+                            for encoding in ['utf-8', 'gbk', 'gb2312', 'gb18030']:
+                                try:
+                                    return payload.decode(encoding)
+                                except UnicodeDecodeError:
+                                    continue
+                            
+                            return payload.decode('ascii', errors='ignore')
+                        except Exception as e:
+                            logger.error(f"解码邮件正文时出错: {str(e)}")
+                            return "(解码失败)"
+                    
+                    # 获取邮件正文
+                    body = ""
+                    if email_message.is_multipart():
+                        for part in email_message.walk():
+                            if part.get_content_type() == "text/plain":
+                                body = safe_decode_payload(part)
+                                if body:
+                                    break
+                    else:
+                        body = safe_decode_payload(email_message)
+                    
+                    email_list.append({
+                        "message_id": num.decode(),
+                        "subject": subject,
+                        "from": from_,
+                        "date": date,
+                        "body": body or "(无内容)"
+                    })
+                except Exception as e:
+                    logger.error(f"处理单个邮件时出错: {str(e)}")
+                    continue
+            
+            self.imap.close()
+            self.imap.logout()
+            
+            return {
+                "status": "success",
+                "emails": email_list,
+                "total": len(email_list)
+            }
+            
+        except Exception as e:
+            logger.error(f"搜索邮件失败: {str(e)}")
+            return {
+                "status": "error",
+                "message": f"搜索邮件失败: {str(e)}"
             }
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:

@@ -133,7 +133,32 @@ def generate_result_summary_prompt() -> str:
     Returns:
         总结提示词
     """
-    return """现在请根据用户的原始问题和工具执行结果生成一个总结性的回答。
+    # 获取基础提示词、工具描述和规则
+    base_prompt = generate_base_system_prompt()
+    tool_descriptions = generate_tool_descriptions()
+    tool_rules = generate_tool_rules()
+    
+    # 添加结果处理相关的提示词
+    result_prompt = """现在请根据用户的原始问题和工具执行结果生成一个总结性的回答。
+
+任务完成判断：
+1. 分析当前执行结果，判断是否已经完成用户的原始任务
+2. 任务完成的条件：
+   - 所有必需的工具调用都已执行完成
+   - 每个工具调用都返回了成功状态
+   - 最终结果满足了用户的原始需求
+   例如：
+   - 删除邮件任务：必须先获取邮件ID，然后成功执行删除操作
+   - 发送邮件任务：必须成功执行发送操作
+   - 搜索任务：必须获取到搜索结果并展示给用户
+3. 如果任务已完成：
+   - 总结执行结果
+   - 说明任务完成状态
+   - 直接返回自然语言回答，不要调用任何工具
+4. 如果任务未完成：
+   - 分析还需要执行哪些步骤
+   - 返回下一个工具调用的 JSON 格式
+   - 不要在回答中说明"正在执行"或"下一步"等过程
 
 回答要求：
 1. 使用清晰易懂的语言
@@ -160,4 +185,27 @@ def generate_result_summary_prompt() -> str:
 2. 重要信息使用加粗或其他醒目方式
 3. 代码或命令使用代码块
 4. 确保链接可点击
-5. 使用适当的分段和列表，提高可读性""" 
+5. 使用适当的分段和列表，提高可读性
+
+示例回答（删除邮件任务）：
+1. 如果刚获取到邮件列表：
+[
+  {
+    "tool_name": "email",
+    "parameters": {
+      "action": "delete_email",
+      "message_id": "123"
+    }
+  }
+]
+
+2. 如果已成功删除邮件：
+已成功删除最新邮件。发件人：xxx，主题：xxx"""
+
+    # 组合所有提示词
+    return "\n\n".join([
+        base_prompt,
+        tool_descriptions,
+        tool_rules,
+        result_prompt
+    ]) 

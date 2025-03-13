@@ -23,18 +23,20 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Assistant API"
     
     # CORS配置
-    CORS_ORIGINS: Union[str, List[str]] = ["*"]
+    CORS_ORIGINS: Union[str, List[str]] = "*"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
-        if isinstance(v, str) and not v.startswith("["):
+    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+        if isinstance(v, str):
+            if v == "*":
+                return ["*"]
             return [i.strip() for i in v.split(",")]
         return v
     
     # 服务器配置
     HOST: str = "0.0.0.0"
-    PORT: int = 8001
+    PORT: int = 8002
     
     # 安全配置
     SECRET_KEY: str = "your-secret-key"

@@ -28,7 +28,7 @@ async def execute_tool(tool_request: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=errors)
         
     # Execute tool
-    result = await ai_tool_service.execute_tool_from_ai(tool_request)
+    result = await ai_tool_service.execute_tool(tool_request)
     
     # 检查执行结果
     if not result.get("success", False):
